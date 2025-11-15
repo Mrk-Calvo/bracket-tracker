@@ -5,14 +5,14 @@ from datetime import datetime
 import os
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'nzxt-bracket-tracker-2024')
+app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>NZXT Bracket Inventory</title>
+    <title>Bracket Inventory Tracker</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
     <style>
@@ -380,7 +380,7 @@ HTML_TEMPLATE = '''
 <body>
     <div class="container">
         <div class="header">
-            <h1 style="margin: 0; font-size: 20px;">NZXT Bracket Inventory Tracker</h1>
+            <h1 style="margin: 0; font-size: 20px;">Bracket Inventory Tracker</h1>
             <div class="status-bar">
                 <div class="status-item">
                     <div class="status-label">STATUS</div>
@@ -583,10 +583,10 @@ HTML_TEMPLATE = '''
         
         <!-- Developer Credit -->
         <div class="developer-credit">
-            Developed by <strong>Mark Calvo</strong> | 
-            <a href="mailto:mark.calvo@premioinc.com">Contact</a> | 
+            Developed by <strong>Your Name</strong> | 
+            <a href="mailto:your.email@example.com">Contact</a> | 
             Version 1.0 | 
-            
+            Deployed on Render
         </div>
     </div>
 
@@ -630,8 +630,29 @@ HTML_TEMPLATE = '''
             updateAllInventoryDisplays(data.items);
             updateWorkOrderDisplay();
             updateSetAnalysis();
-            document.getElementById('lastUpdate').textContent = data.timestamp;
+            
+            // Show current local time instead of server time
+            const now = new Date();
+            const localTime = now.toLocaleTimeString('en-US', { 
+                hour12: true, 
+                hour: 'numeric', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            document.getElementById('lastUpdate').textContent = localTime;
         });
+        
+        // Update time every second to keep it current
+        setInterval(() => {
+            const now = new Date();
+            const localTime = now.toLocaleTimeString('en-US', { 
+                hour12: true, 
+                hour: 'numeric', 
+                minute: '2-digit', 
+                second: '2-digit' 
+            });
+            document.getElementById('lastUpdate').textContent = localTime;
+        }, 1000);
         
         // Update inventory displays on all tabs
         function updateAllInventoryDisplays(items) {
@@ -1478,8 +1499,9 @@ def api_inventory():
     conn.close()
     return jsonify([dict(item) for item in items])
 
+# FIXED FOR RENDER DEPLOYMENT - Local time display
 if __name__ == '__main__':
-    print("🚀 Starting NZXT Bracket Inventory Tracker...")
+    print("🚀 Starting Bracket Inventory Tracker...")
     print("👨‍💻 Developed by Your Name")
     init_database()
     print("✅ Database initialized")
@@ -1487,5 +1509,4 @@ if __name__ == '__main__':
     
     # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
-
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
