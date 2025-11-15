@@ -583,10 +583,10 @@ HTML_TEMPLATE = '''
         
         <!-- Developer Credit -->
         <div class="developer-credit">
-            Developed by <strong>Your Name</strong> | 
-            <a href="mailto:your.email@example.com">Contact</a> | 
+            Developed by <strong>Mark Calvo</strong> | 
+            <a href="mailto:mark.calvo@premioinc.com">Contact</a> | 
             Version 1.0 | 
-            Deployed on Render
+            
         </div>
     </div>
 
@@ -1502,7 +1502,7 @@ def api_inventory():
 # FIXED FOR RENDER DEPLOYMENT - Local time display
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
-    print("👨‍💻 Developed by Your Name")
+    print("👨‍💻 Developed by Mark Calvo")
     init_database()
     print("✅ Database initialized")
     print("🌐 Server starting...")
@@ -1510,3 +1510,4 @@ if __name__ == '__main__':
     # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+
