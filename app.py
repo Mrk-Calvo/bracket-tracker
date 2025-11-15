@@ -1272,15 +1272,12 @@ def broadcast_update():
     activity_data = [dict(act) for act in recent_activity]
     work_orders_data = [dict(wo) for wo in work_orders]
     
-    # Convert to 12-hour format
-    now = datetime.now()
-    timestamp_12hr = now.strftime("%I:%M:%S %p").lstrip('0')
-    
+    # Remove server timestamp - client will use local time instead
     socketio.emit('inventory_update', {
         'items': items_data,
         'recent_activity': activity_data,
-        'work_orders': work_orders_data,
-        'timestamp': timestamp_12hr
+        'work_orders': work_orders_data
+        # No 'timestamp' field - client handles time locally
     })
 
 # SocketIO events
@@ -1490,4 +1487,5 @@ if __name__ == '__main__':
     
     # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
+
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
