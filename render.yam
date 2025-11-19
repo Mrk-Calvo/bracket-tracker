@@ -3,7 +3,7 @@ services:
     name: bracket-inventory-tracker
     env: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:$PORT wsgi:app
     envVars:
       - key: SECRET_KEY
