@@ -9,48 +9,18 @@ A real-time inventory management system for tracking 3D printed brackets and man
 - **Multi-station Workflow**: Printing Station, Picking Station, and Inventory Management
 - **Slack Integration**: Get notifications for low stock and work order status
 - **Role-based Access Control**: Admin, Operator, and Viewer roles
-- **Export Capabilities**: Export data to Excel, PDF, and JSON formats
+- **Export Capabilities**: Export data to CSV, PDF, and JSON formats
 - **Set Completion Analysis**: See how many complete sets can be built from current inventory
-
-## Component Sets
-
-### H6 Set (requires all 3 components)
-- H6-623A
-- H6-623B  
-- H6-623C
-
-### H7 Sets
-- H7-282 Set (H7-282 only)
-- H7-304 Set (H7-304 only)
-
-### H9 Set (requires all 3 components + optional spacer)
-- H9-923A
-- H9-923B
-- H9-923C
-- H9-SPACER (optional)
-
-## User Roles
-
-### Admin
-- Full system access
-- User management
-- System settings configuration
-- Slack integration setup
-
-### Operator  
-- Inventory management
-- Work order creation and completion
-- Printing and picking station operations
-
-### Viewer
-- Read-only access
-- View inventory and work orders
-- Export data
 
 ## Deployment on Render.com
 
 ### 1. Fork/Upload to GitHub
-Ensure your code is in a GitHub repository.
+Ensure your code is in a GitHub repository with these files:
+- `app.py` (main application)
+- `wsgi.py` (WSGI entry point)
+- `requirements.txt` (dependencies)
+- `runtime.txt` (Python version)
+- `render.yaml` (deployment config)
 
 ### 2. Create Render.com Account
 Sign up at [render.com](https://render.com)
@@ -58,18 +28,15 @@ Sign up at [render.com](https://render.com)
 ### 3. Create New Web Service
 - Connect your GitHub repository
 - Use the following settings:
-  - **Name**: `bracket-inventory-tracker` (or your preferred name)
+  - **Name**: `bracket-inventory-tracker`
   - **Environment**: `Python`
   - **Region**: Choose closest to your location
-  - **Branch**: `main` (or your default branch)
-  - **Root Directory**: (leave empty if root)
   - **Build Command**: `pip install -r requirements.txt`
-  - **Start Command**: `gunicorn --worker-class eventlet -w 1 wsgi:app`
+  - **Start Command**: `gunicorn --worker-class eventlet -w 1 -b 0.0.0.0:$PORT wsgi:app`
 
 ### 4. Environment Variables
 Add these environment variables in Render.com dashboard:
-
-- `SECRET_KEY`: Generate a secure random key
+- `SECRET_KEY`: (Render will auto-generate this)
 - `SLACK_WEBHOOK_URL`: Your Slack webhook URL for notifications (optional)
 
 ### 5. Deploy
@@ -78,22 +45,17 @@ Click "Create Web Service" and wait for deployment to complete.
 ## Default Login Credentials
 
 After first deployment, use these credentials:
-
 - **Admin**: `admin` / `admin123`
 - **Operator**: `operator` / `operator123` 
 - **Viewer**: `viewer` / `viewer123`
 
 **Important**: Change default passwords after first login!
 
-## Local Development
+## Support
 
-### Prerequisites
-- Python 3.8+
-- pip
+For issues and questions:
+- Email: mark.calvo@premioinc.com
 
-### Installation
-1. Clone the repository
-2. Create virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+## Version
+
+v2.1 - Real-time Bracket Inventory Management System
