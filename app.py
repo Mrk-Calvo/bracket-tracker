@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 import sqlite3
@@ -7,7 +10,6 @@ import hashlib
 import secrets
 from functools import wraps
 import json
-import pandas as pd
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
@@ -18,7 +20,7 @@ import requests
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Slack webhook URL for alerts
 SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
@@ -693,7 +695,6 @@ HTML_TEMPLATE = '''
             <div class="export-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Export Data</h3>
                 <div class="export-buttons">
-                    <button class="btn btn-export" onclick="exportToExcel()">Export to Excel</button>
                     <button class="btn btn-export" onclick="exportToPDF()">Export to PDF</button>
                     <button class="btn btn-export" onclick="exportInventoryJSON()">Export JSON (API)</button>
                 </div>
@@ -1508,10 +1509,6 @@ HTML_TEMPLATE = '''
         }
         
         // Export Functions
-        function exportToExcel() {
-            window.open('/api/export/excel', '_blank');
-        }
-        
         function exportToPDF() {
             window.open('/api/export/pdf', '_blank');
         }
@@ -2584,67 +2581,6 @@ def api_inventory_json():
         'timestamp': datetime.now().isoformat()
     })
 
-@app.route('/api/export/excel')
-@login_required
-def export_excel():
-    conn = get_db()
-    
-    # Get inventory data
-    items = conn.execute('SELECT * FROM items ORDER BY case_type, name').fetchall()
-    
-    # Get transaction history
-    transactions = conn.execute('''
-        SELECT t.timestamp, i.name, i.case_type, t.change, t.station, t.notes, t.username
-        FROM transactions t 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC 
-        LIMIT 1000
-    ''').fetchall()
-    
-    conn.close()
-    
-    # Create Excel file in memory
-    output = io.BytesIO()
-    
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        # Inventory sheet
-        inventory_data = []
-        for item in items:
-            inventory_data.append({
-                'Name': item['name'],
-                'Description': item['description'],
-                'Case Type': item['case_type'],
-                'Quantity': item['quantity'],
-                'Min Stock': item['min_stock']
-            })
-        
-        df_inventory = pd.DataFrame(inventory_data)
-        df_inventory.to_excel(writer, sheet_name='Inventory', index=False)
-        
-        # Transactions sheet
-        transactions_data = []
-        for trans in transactions:
-            transactions_data.append({
-                'Timestamp': trans['timestamp'],
-                'Item': trans['name'],
-                'Case Type': trans['case_type'],
-                'Change': trans['change'],
-                'Station': trans['station'],
-                'User': trans['username'],
-                'Notes': trans['notes']
-            })
-        
-        df_transactions = pd.DataFrame(transactions_data)
-        df_transactions.to_excel(writer, sheet_name='Transactions', index=False)
-    
-    output.seek(0)
-    
-    return app.response_class(
-        output.getvalue(),
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        headers={'Content-Disposition': 'attachment;filename=inventory_export.xlsx'}
-    )
-
 @app.route('/api/export/pdf')
 @login_required
 def export_pdf():
@@ -2886,14 +2822,6 @@ def sync_external():
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
         
-        # Example implementation (commented out until API is available)
-        # response = requests.get(api_url, headers=headers)
-        # if response.status_code == 200:
-        #     external_data = response.json()
-        #     # Process and update inventory based on external_data
-        # else:
-        #     return jsonify({'success': False, 'error': f'API request failed: {response.status_code}'})
-        
         # For now, return a placeholder message
         return jsonify({
             'success': True, 
@@ -2903,7 +2831,6 @@ def sync_external():
     except Exception as e:
         return jsonify({'success': False, 'error': f'Sync failed: {str(e)}'})
 
-# FIXED FOR RENDER DEPLOYMENT
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
     print("👨‍💻 Developed by Mark Calvo")
@@ -2911,6 +2838,5 @@ if __name__ == '__main__':
     print("✅ Database initialized")
     print("🌐 Server starting...")
     
-    # Get port from environment variable or default to 5000
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)
