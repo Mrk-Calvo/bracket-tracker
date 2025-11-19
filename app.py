@@ -1,5 +1,5 @@
-import eventlet
-eventlet.monkey_patch()
+from gevent import monkey
+monkey.patch_all()
 
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
@@ -16,7 +16,7 @@ import csv
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
 # Slack webhook URL for alerts
 SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
@@ -2009,3 +2009,4 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
+
