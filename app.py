@@ -1,7 +1,7 @@
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import hashlib
 import secrets
@@ -11,6 +11,7 @@ import io
 import requests
 import csv
 import time
+import pytz
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
@@ -739,6 +740,15 @@ HTML_TEMPLATE = '''
             color: #666;
         }
         
+        .print-all-container {
+            page-break-after: always;
+            margin-bottom: 30px;
+        }
+        
+        .print-all-container:last-child {
+            page-break-after: avoid;
+        }
+        
         @media print {
             body * {
                 visibility: hidden;
@@ -747,12 +757,16 @@ HTML_TEMPLATE = '''
                 visibility: visible;
             }
             .printable-order {
-                position: absolute;
+                position: relative;
                 left: 0;
                 top: 0;
                 width: 100%;
                 box-shadow: none;
                 border: none;
+                page-break-inside: avoid;
+            }
+            .print-all-container {
+                page-break-inside: avoid;
             }
             .no-print {
                 display: none !important;
@@ -813,6 +827,10 @@ HTML_TEMPLATE = '''
                     <div class="status-item">
                         <div class="status-label">LAST UPDATE</div>
                         <div class="status-value" id="lastUpdate">--:--:-- --</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="status-label">PST TIME</div>
+                        <div class="status-value" id="currentTime">--:--:-- --</div>
                     </div>
                 </div>
             </div>
@@ -887,7 +905,7 @@ HTML_TEMPLATE = '''
             <div class="print-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Print Picking List</h3>
                 <p style="margin-bottom: 10px; font-size: 13px;">Print picking lists for orders ready for assembly.</p>
-                <button class="btn btn-print" onclick="printPickingList()">Print Picking List</button>
+                <button class="btn btn-print" onclick="printAllPickingLists()">Print All Picking Lists</button>
                 
                 <div id="printable-picking-list" style="display: none;">
                     <!-- Printable content will be loaded here -->
@@ -1239,6 +1257,28 @@ HTML_TEMPLATE = '''
         let assemblyOrders = [];
         let currentUserRole = '{{ session.role }}' || 'viewer';
         
+        // Real-time clock function
+        function updateClock() {
+            const now = new Date();
+            // Convert to PST (UTC-8) - Note: This doesn't account for DST
+            const pstOffset = -8 * 60; // PST is UTC-8
+            const localOffset = now.getTimezoneOffset();
+            const pstTime = new Date(now.getTime() + (pstOffset + localOffset) * 60000);
+            
+            const hours = pstTime.getHours();
+            const minutes = pstTime.getMinutes().toString().padStart(2, '0');
+            const seconds = pstTime.getSeconds().toString().padStart(2, '0');
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            const displayHours = hours % 12 || 12;
+            
+            const timeString = `${displayHours}:${minutes}:${seconds} ${ampm} PST`;
+            document.getElementById('currentTime').textContent = timeString;
+        }
+        
+        // Start the clock and update every second
+        updateClock();
+        setInterval(updateClock, 1000);
+        
         // Tab management
         function showTab(tabName) {
             document.querySelectorAll('.tab-content').forEach(tab => {
@@ -1559,8 +1599,8 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // Print picking list - IMPROVED VERSION
-        function printPickingList() {
+        // Print all picking lists in one page - IMPROVED VERSION
+        function printAllPickingLists() {
             const readyOrders = assemblyOrders.filter(order => order.status === 'ready');
             
             if (readyOrders.length === 0) {
@@ -1571,7 +1611,11 @@ HTML_TEMPLATE = '''
             const printContainer = document.getElementById('printable-picking-list');
             printContainer.innerHTML = '';
             
-            readyOrders.forEach(order => {
+            // Create a container for all printable orders
+            const allOrdersContainer = document.createElement('div');
+            allOrdersContainer.className = 'print-all-container';
+            
+            readyOrders.forEach((order, index) => {
                 const workOrder = workOrders.find(wo => wo.id === order.work_order_id);
                 if (!workOrder) return;
                 
@@ -1600,8 +1644,15 @@ HTML_TEMPLATE = '''
                     </div>
                 `;
                 
-                printContainer.appendChild(printableDiv);
+                allOrdersContainer.appendChild(printableDiv);
+                
+                // Add page break except for the last order
+                if (index < readyOrders.length - 1) {
+                    allOrdersContainer.innerHTML += '<div style="page-break-after: always;"></div>';
+                }
             });
+            
+            printContainer.appendChild(allOrdersContainer);
             
             // Show print dialog
             printContainer.style.display = 'block';
@@ -2489,6 +2540,13 @@ def get_sku_set_mapping():
     except:
         return SKU_SET_MAPPING
 
+def get_pst_time():
+    """Get current time in PST timezone"""
+    utc_now = datetime.now(timezone.utc)
+    pst_tz = pytz.timezone('US/Pacific')
+    pst_now = utc_now.astimezone(pst_tz)
+    return pst_now.strftime("%I:%M:%S %p").lstrip('0')
+
 def send_slack_notification(message):
     """Send notification to Slack with improved error handling"""
     webhook_url = get_setting('slack_webhook_url')
@@ -2797,16 +2855,15 @@ def broadcast_update():
     work_orders_data = [dict(wo) for wo in work_orders]
     assembly_orders_data = [dict(ao) for ao in assembly_orders]
     
-    # Convert to 12-hour format
-    now = datetime.now()
-    timestamp_12hr = now.strftime("%I:%M:%S %p").lstrip('0')
+    # Use PST time for timestamp
+    timestamp_pst = get_pst_time()
     
     socketio.emit('inventory_update', {
         'items': items_data,
         'recent_activity': activity_data,
         'work_orders': work_orders_data,
         'assembly_orders': assembly_orders_data,
-        'timestamp': timestamp_12hr
+        'timestamp': timestamp_pst
     })
 
 # Authentication decorators
@@ -3712,22 +3769,3 @@ if __name__ == '__main__':
                 port=port, 
                 debug=False,
                 allow_unsafe_werkzeug=True)
-
-if __name__ == '__main__':
-    print("🚀 Starting Bracket Inventory Tracker...")
-    print("👨‍💻 Developed by Mark Calvo")
-    print("🌐 Render.com Compatible Version 2.4")
-    init_database()
-    print("✅ Database initialized")
-    
-    # Check if we're in production (Render sets RENDER=true)
-    is_render = os.environ.get('RENDER', 'false').lower() == 'true'
-    
-    if is_render:
-        print("🌐 Production mode - starting server...")
-        # In production, Render will use the wsgi.py file
-        socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-    else:
-        print("🔧 Development mode - starting server with debug...")
-        # In development, use debug mode
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
