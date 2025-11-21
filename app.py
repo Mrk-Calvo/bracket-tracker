@@ -13,6 +13,9 @@ import json
 import io
 import requests
 import csv
+import time
+from bs4 import BeautifulSoup
+import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
@@ -21,11 +24,36 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 # Slack webhook URL for alerts
 SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
 
-# User roles
+# SKU to Bracket Mapping - UPDATED WITH REAL EXAMPLES
+SKU_BRACKET_MAPPING = {
+    'PB1-X101-BL': ['H7-282'],
+    'PB1-28A0113-BL': ['H6-623A', 'H6-623B', 'H6-623C'],
+    'PB1-18A0101-WH': ['H9-923A', 'H9-923B', 'H9-923C'],
+    'PB1-38A0101-BK': ['H7-304'],
+}
+
+# SKU to Set Type Mapping
+SKU_SET_MAPPING = {
+    'PB1-X101-BL': 'H7-282',
+    'PB1-28A0113-BL': 'H6',
+    'PB1-18A0101-WH': 'H9',
+    'PB1-38A0101-BK': 'H7-304',
+}
+
+# Enhanced User roles with tab permissions
 ROLES = {
-    'admin': ['admin', 'operator', 'viewer'],
-    'operator': ['operator', 'viewer'],
-    'viewer': ['viewer']
+    'admin': {
+        'level': 3,
+        'tabs': ['printing', 'picking', 'assembly', 'inventory', 'external', 'history', 'admin']
+    },
+    'operator': {
+        'level': 2, 
+        'tabs': ['printing', 'picking', 'assembly', 'inventory', 'external', 'history']
+    },
+    'viewer': {
+        'level': 1,
+        'tabs': ['printing', 'picking', 'assembly', 'inventory', 'external', 'history']
+    }
 }
 
 HTML_TEMPLATE = '''
@@ -205,6 +233,30 @@ HTML_TEMPLATE = '''
             background: var(--primary);
             color: white;
         }
+        .btn-sync {
+            background: var(--warning);
+            color: white;
+        }
+        .btn-convert {
+            background: var(--info);
+            color: white;
+        }
+        .btn-upload {
+            background: var(--success);
+            color: white;
+        }
+        .btn-move {
+            background: #6f42c1;
+            color: white;
+        }
+        .btn-assemble {
+            background: #20c997;
+            color: white;
+        }
+        .btn-print {
+            background: #17a2b8;
+            color: white;
+        }
         
         .form-section {
             background: #f8f9fa;
@@ -303,6 +355,39 @@ HTML_TEMPLATE = '''
         .component-missing {
             border-left: 2px solid var(--danger);
             background: #f8d7da;
+        }
+        
+        .external-orders-section {
+            background: #fff3cd;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 12px 0;
+            border: 1px solid var(--warning);
+        }
+        .external-order-item {
+            padding: 10px;
+            border: 1px solid var(--warning);
+            margin-bottom: 8px;
+            background: white;
+            border-radius: 5px;
+        }
+        .external-order-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+            margin-top: 8px;
+            font-size: 12px;
+        }
+        .external-order-detail {
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .external-order-detail strong {
+            display: block;
+            margin-bottom: 4px;
+            color: #333;
         }
         
         .set-analysis {
@@ -522,6 +607,157 @@ HTML_TEMPLATE = '''
             width: auto;
         }
         
+        .upload-section {
+            background: #e8f5e8;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            border: 1px solid var(--success);
+        }
+        
+        .file-upload {
+            border: 2px dashed #ddd;
+            padding: 20px;
+            text-align: center;
+            border-radius: 6px;
+            margin: 10px 0;
+        }
+        
+        .sample-csv {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        
+        .assembly-section {
+            background: #e6f7ff;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 12px 0;
+            border: 1px solid var(--info);
+        }
+        
+        .assembly-ready {
+            background: #d4edda;
+            border: 1px solid var(--success);
+        }
+        
+        .assembly-building {
+            background: #fff3cd;
+            border: 1px solid var(--warning);
+        }
+        
+        .assembly-completed {
+            background: #e8f5e8;
+            border: 1px solid var(--success);
+            opacity: 0.8;
+        }
+        
+        .assembly-status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: bold;
+            margin-left: 8px;
+        }
+        
+        .status-ready {
+            background: var(--success);
+            color: white;
+        }
+        
+        .status-building {
+            background: var(--warning);
+            color: black;
+        }
+        
+        .status-completed {
+            background: var(--info);
+            color: white;
+        }
+        
+        .assembly-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        
+        .assembly-info {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .print-section {
+            background: #fff3cd;
+            padding: 12px;
+            border-radius: 6px;
+            margin: 12px 0;
+            border: 1px solid var(--warning);
+        }
+        
+        .printable-order {
+            background: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 6px;
+            border: 1px solid #ddd;
+        }
+        
+        .print-header {
+            text-align: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #333;
+        }
+        
+        .print-components {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin: 15px 0;
+        }
+        
+        .print-component {
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .print-footer {
+            margin-top: 20px;
+            padding-top: 10px;
+            border-top: 1px solid #ddd;
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+        }
+        
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            .printable-order, .printable-order * {
+                visibility: visible;
+            }
+            .printable-order {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                box-shadow: none;
+                border: none;
+            }
+            .no-print {
+                display: none !important;
+            }
+        }
+        
         @media (max-width: 768px) {
             .tab { min-width: 90px; padding: 10px 12px; }
             .form-row { flex-direction: column; }
@@ -541,6 +777,12 @@ HTML_TEMPLATE = '''
                 align-items: flex-start;
             }
             .export-buttons {
+                flex-direction: column;
+            }
+            .external-order-info {
+                grid-template-columns: 1fr;
+            }
+            .work-order-actions, .assembly-actions {
                 flex-direction: column;
             }
         }
@@ -583,7 +825,9 @@ HTML_TEMPLATE = '''
         <div class="tabs">
             <button class="tab active" onclick="showTab('printing')">Printing Station</button>
             <button class="tab" onclick="showTab('picking')">Picking Station</button>
+            <button class="tab" onclick="showTab('assembly')">Assembly Line</button>
             <button class="tab" onclick="showTab('inventory')">Inventory Management</button>
+            <button class="tab" onclick="showTab('external')">External Work Orders</button>
             <button class="tab" onclick="showTab('history')">Movement History</button>
             {% if session.role == 'admin' %}
             <button class="tab" onclick="showTab('admin')">Admin</button>
@@ -635,12 +879,24 @@ HTML_TEMPLATE = '''
         
         <!-- Picking Station Tab -->
         <div id="picking" class="tab-content">
-            <h2 style="margin-bottom: 8px; font-size: 18px;">Picking Station - Manage Orders & Inventory</h2>
+            <h2 style="margin-bottom: 8px; font-size: 18px;">Picking Station - Prepare Orders for Assembly</h2>
             
             {% if session.role in ['admin', 'operator'] %}
+            <!-- Print Section -->
+            <div class="print-section">
+                <h3 style="margin: 0 0 10px 0; font-size: 16px;">Print Picking List</h3>
+                <p style="margin-bottom: 10px; font-size: 13px;">Print picking lists for orders ready for assembly.</p>
+                <button class="btn btn-print" onclick="printPickingList()">Print Picking List</button>
+                
+                <div id="printable-picking-list" style="display: none;">
+                    <!-- Printable content will be loaded here -->
+                </div>
+            </div>
+            
             <!-- Work Orders Section -->
             <div class="work-order-section">
-                <h3 style="margin: 0 0 10px 0; font-size: 16px;">Active Work Orders</h3>
+                <h3 style="margin: 0 0 10px 0; font-size: 16px;">Ready for Assembly</h3>
+                <p style="margin-bottom: 10px; font-size: 13px;">Orders automatically move to Assembly Line when components are available.</p>
                 <div id="work-order-list">
                     <!-- Work orders will be loaded here -->
                 </div>
@@ -679,6 +935,27 @@ HTML_TEMPLATE = '''
             <div class="permission-denied">
                 <h3>Permission Denied</h3>
                 <p>You need operator or admin privileges to access the Picking Station.</p>
+            </div>
+            {% endif %}
+        </div>
+        
+        <!-- Assembly Line Tab -->
+        <div id="assembly" class="tab-content">
+            <h2 style="margin-bottom: 8px; font-size: 18px;">Assembly Line - Build and Complete Orders</h2>
+            
+            {% if session.role in ['admin', 'operator'] %}
+            <!-- Orders Ready for Assembly -->
+            <div class="assembly-section">
+                <h3 style="margin: 0 0 10px 0; font-size: 16px;">Orders Ready for Assembly</h3>
+                <p style="margin-bottom: 10px; font-size: 13px;">Orders automatically moved from Picking Station when components are available.</p>
+                <div id="assembly-ready-list">
+                    <!-- Ready orders will be loaded here -->
+                </div>
+            </div>
+            {% else %}
+            <div class="permission-denied">
+                <h3>Permission Denied</h3>
+                <p>You need operator or admin privileges to access the Assembly Line.</p>
             </div>
             {% endif %}
         </div>
@@ -775,6 +1052,45 @@ HTML_TEMPLATE = '''
             {% endif %}
         </div>
         
+        <!-- External Work Orders Tab -->
+        <div id="external" class="tab-content">
+            <h2 style="margin-bottom: 8px; font-size: 18px;">External Work Orders</h2>
+            <p style="margin-bottom: 15px; font-size: 13px;">Work orders manually added or imported via CSV.</p>
+            
+            {% if session.role in ['admin', 'operator'] %}
+            <div class="external-orders-section">
+                <!-- CSV Upload Section -->
+                <div class="upload-section">
+                    <h3 style="margin: 0 0 10px 0; font-size: 16px;">Upload CSV File</h3>
+                    <p style="margin-bottom: 10px; font-size: 13px;">Upload a CSV file with work orders.</p>
+                    
+                    <div class="file-upload">
+                        <input type="file" id="csvFile" accept=".csv" style="margin-bottom: 10px;">
+                        <button class="btn btn-upload" onclick="uploadCSV()">Upload CSV</button>
+                    </div>
+                    
+                    <div class="sample-csv">
+                        <strong>CSV Format (required columns):</strong><br>
+                        OrderNumber,SKU,Quantity<br>
+                        WO-001,PB1-28A0113-BL,10<br>
+                        WO-002,PB1-X101-BL,5<br>
+                        WO-003,PB1-18A0101-WH,8
+                    </div>
+                </div>
+                
+                <h3 style="margin: 15px 0 10px 0; font-size: 16px;">External Work Orders</h3>
+                <div id="external-orders-list">
+                    <!-- External orders will be loaded here -->
+                </div>
+            </div>
+            {% else %}
+            <div class="permission-denied">
+                <h3>Permission Denied</h3>
+                <p>You need operator or admin privileges to access External Work Orders.</p>
+            </div>
+            {% endif %}
+        </div>
+        
         <!-- History Tab -->
         <div id="history" class="tab-content">
             <h2 style="margin-bottom: 8px; font-size: 18px;">Movement History</h2>
@@ -864,6 +1180,26 @@ HTML_TEMPLATE = '''
             </div>
             
             <div class="admin-section">
+                <h3 style="margin: 0 0 10px 0; font-size: 16px;">SKU Mapping</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>SKU to Bracket Mapping</label>
+                        <textarea id="skuMapping" placeholder='{"PB1-X101-BL": ["H7-282"]}' style="width: 100%; height: 100px; font-family: monospace;"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>SKU to Set Type Mapping</label>
+                        <textarea id="skuSetMapping" placeholder='{"PB1-X101-BL": "H7-282"}' style="width: 100%; height: 100px; font-family: monospace;"></textarea>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <button class="btn-add" onclick="saveSkuMapping()">Save SKU Mapping</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="admin-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Slack Integration</h3>
                 <div class="form-row">
                     <div class="form-group">
@@ -882,30 +1218,6 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
             </div>
-            
-            <div class="api-section">
-                <h3 style="margin: 0 0 10px 0; font-size: 16px;">API Integration (Future Use)</h3>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>External API URL</label>
-                        <input type="text" id="externalApiUrl" placeholder="https://api.example.com/inventory">
-                    </div>
-                    <div class="form-group">
-                        <label>API Key</label>
-                        <input type="password" id="externalApiKey" placeholder="Enter API key">
-                    </div>
-                    <div class="form-group">
-                        <label>&nbsp;</label>
-                        <button class="btn" onclick="saveApiSettings()">Save API Settings</button>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>Sync Inventory from API</label>
-                        <button class="btn-add" onclick="syncFromExternalApi()">Sync Now</button>
-                    </div>
-                </div>
-            </div>
         </div>
         {% endif %}
         
@@ -913,7 +1225,7 @@ HTML_TEMPLATE = '''
         <div class="developer-credit">
             Developed by <strong>Mark Calvo</strong> | 
             <a href="mailto:mark.calvo@premioinc.com">Contact</a> | 
-            Version 2.1 | 
+            Version 2.3 | 
             
         </div>
     </div>
@@ -923,7 +1235,7 @@ HTML_TEMPLATE = '''
         const socket = io();
         let currentInventory = [];
         let workOrders = [];
-        let recentlyCompletedOrders = [];
+        let assemblyOrders = [];
         let currentUserRole = '{{ session.role }}' || 'viewer';
         
         // Tab management
@@ -940,9 +1252,14 @@ HTML_TEMPLATE = '''
             
             if (tabName === 'history') {
                 loadHistory();
+            } else if (tabName === 'external') {
+                loadExternalOrders();
+            } else if (tabName === 'assembly') {
+                loadAssemblyOrders();
             } else if (tabName === 'admin' && currentUserRole === 'admin') {
                 loadUsers();
                 loadApiSettings();
+                loadCompanySettings();
             }
         }
         
@@ -1003,8 +1320,10 @@ HTML_TEMPLATE = '''
         socket.on('inventory_update', (data) => {
             currentInventory = data.items;
             workOrders = data.work_orders || [];
+            assemblyOrders = data.assembly_orders || [];
             updateAllInventoryDisplays(data.items);
             updateWorkOrderDisplay();
+            updateAssemblyDisplay();
             updateSetAnalysis();
             document.getElementById('lastUpdate').textContent = data.timestamp;
         });
@@ -1089,13 +1408,18 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // Update work order display with completion options
+        // Update work order display - automatically move to assembly when ready
         function updateWorkOrderDisplay() {
             const container = document.getElementById('work-order-list');
             container.innerHTML = '';
             
-            if (workOrders.length === 0) {
-                container.innerHTML = '<div class="work-order-item">No active work orders</div>';
+            // Filter out orders that are already in assembly
+            const activeWorkOrders = workOrders.filter(wo => 
+                !assemblyOrders.some(ao => ao.work_order_id === wo.id)
+            );
+            
+            if (activeWorkOrders.length === 0) {
+                container.innerHTML = '<div class="work-order-item">No work orders ready for assembly</div>';
                 return;
             }
             
@@ -1107,7 +1431,7 @@ HTML_TEMPLATE = '''
                 'H9': []
             };
             
-            workOrders.forEach(order => {
+            activeWorkOrders.forEach(order => {
                 if (ordersByType[order.set_type]) {
                     ordersByType[order.set_type].push(order);
                 }
@@ -1123,14 +1447,14 @@ HTML_TEMPLATE = '''
                     ordersByType[setType].forEach(workOrder => {
                         // Get components for this set type
                         const components = getComponentsForSet(workOrder.set_type, workOrder.include_spacer);
-                        let canComplete = true;
+                        let canMoveToAssembly = true;
                         let missingComponents = [];
                         
                         // Check if we have enough of each component
                         components.forEach(componentName => {
                             const component = currentInventory.find(item => item.name === componentName);
                             if (!component || component.quantity < workOrder.required_sets) {
-                                canComplete = false;
+                                canMoveToAssembly = false;
                                 missingComponents.push({
                                     name: componentName,
                                     required: workOrder.required_sets,
@@ -1140,12 +1464,17 @@ HTML_TEMPLATE = '''
                             }
                         });
                         
+                        // Automatically move to assembly if ready
+                        if (canMoveToAssembly) {
+                            moveToAssembly(workOrder.id);
+                            return; // Skip displaying this order as it's being moved
+                        }
+                        
                         categoryDiv.innerHTML += `
                             <div class="work-order-item">
                                 <div class="work-order-header">
                                     <div class="work-order-title">${workOrder.order_number} - ${workOrder.required_sets} sets ${workOrder.include_spacer ? '(with spacer)' : ''}</div>
                                     <div class="work-order-actions">
-                                        <button class="btn-complete" onclick="completeWorkOrder(${workOrder.id})" ${canComplete ? '' : 'disabled'}>Complete</button>
                                         <button class="btn-delete" onclick="deleteWorkOrder(${workOrder.id})">Delete</button>
                                     </div>
                                 </div>
@@ -1163,7 +1492,7 @@ HTML_TEMPLATE = '''
                                         `;
                                     }).join('')}
                                 </div>
-                                ${!canComplete ? `
+                                ${!canMoveToAssembly ? `
                                     <div class="missing-warning">
                                         <strong>Missing:</strong> ${missingComponents.map(mc => `${mc.name} (need ${mc.missing})`).join(', ')}
                                     </div>
@@ -1175,44 +1504,106 @@ HTML_TEMPLATE = '''
                     container.appendChild(categoryDiv);
                 }
             });
-            
-            // Show completion alerts if any orders became completable
-            showCompletionAlerts();
         }
         
-        // Show alerts for orders that became completable after quantity changes
-        function showCompletionAlerts() {
-            // Clear any existing alerts
-            document.querySelectorAll('.completion-alert').forEach(alert => alert.remove());
+        // Update assembly line display - only show ready orders
+        function updateAssemblyDisplay() {
+            updateAssemblyReadyList();
+        }
+        
+        function updateAssemblyReadyList() {
+            const container = document.getElementById('assembly-ready-list');
+            container.innerHTML = '';
             
-            const workOrderList = document.getElementById('work-order-list');
+            const readyOrders = assemblyOrders.filter(order => order.status === 'ready');
             
-            workOrders.forEach(workOrder => {
+            if (readyOrders.length === 0) {
+                container.innerHTML = '<div class="work-order-item">No orders ready for assembly</div>';
+                return;
+            }
+            
+            readyOrders.forEach(order => {
+                const workOrder = workOrders.find(wo => wo.id === order.work_order_id);
+                if (!workOrder) return;
+                
                 const components = getComponentsForSet(workOrder.set_type, workOrder.include_spacer);
-                let canComplete = true;
                 
-                // Check if we have enough of each component
-                components.forEach(componentName => {
-                    const component = currentInventory.find(item => item.name === componentName);
-                    if (!component || component.quantity < workOrder.required_sets) {
-                        canComplete = false;
-                    }
-                });
-                
-                // If this order can be completed and wasn't in the recently completed list
-                if (canComplete && !recentlyCompletedOrders.includes(workOrder.id)) {
-                    const alertDiv = document.createElement('div');
-                    alertDiv.className = 'completion-alert';
-                    alertDiv.innerHTML = `
-                        <strong>${workOrder.order_number}</strong> is now ready to complete! 
-                        All components are available. Click "Complete" to finish this order.
-                    `;
-                    workOrderList.insertBefore(alertDiv, workOrderList.firstChild);
-                    
-                    // Add to recently completed to avoid duplicate alerts
-                    recentlyCompletedOrders.push(workOrder.id);
-                }
+                container.innerHTML += `
+                    <div class="work-order-item assembly-ready">
+                        <div class="work-order-header">
+                            <div class="work-order-title">
+                                ${workOrder.order_number} - ${workOrder.required_sets} sets ${workOrder.include_spacer ? '(with spacer)' : ''}
+                                <span class="assembly-status status-ready">READY</span>
+                            </div>
+                            <div class="work-order-actions">
+                                <button class="btn-complete" onclick="completeAssembly(${order.id})">Complete</button>
+                            </div>
+                        </div>
+                        <div class="component-list">
+                            ${components.map(compName => {
+                                return `
+                                    <div class="component-item component-ok">
+                                        <div><strong>${compName}</strong></div>
+                                        <div>${workOrder.required_sets} needed</div>
+                                        <div>READY</div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        <div class="assembly-info">
+                            Moved to assembly: ${new Date(order.moved_at).toLocaleString()}
+                        </div>
+                    </div>
+                `;
             });
+        }
+        
+        // Print picking list
+        function printPickingList() {
+            const readyOrders = assemblyOrders.filter(order => order.status === 'ready');
+            
+            if (readyOrders.length === 0) {
+                alert('No orders ready for picking');
+                return;
+            }
+            
+            const printContainer = document.getElementById('printable-picking-list');
+            printContainer.innerHTML = '';
+            
+            readyOrders.forEach(order => {
+                const workOrder = workOrders.find(wo => wo.id === order.work_order_id);
+                if (!workOrder) return;
+                
+                const components = getComponentsForSet(workOrder.set_type, workOrder.include_spacer);
+                
+                const printableDiv = document.createElement('div');
+                printableDiv.className = 'printable-order';
+                printableDiv.innerHTML = `
+                    <div class="print-header">
+                        <h2>PICKING LIST</h2>
+                        <h3>Work Order: ${workOrder.order_number}</h3>
+                        <p>Set Type: ${workOrder.set_type} | Required Sets: ${workOrder.required_sets}</p>
+                    </div>
+                    <div class="print-components">
+                        ${components.map(compName => `
+                            <div class="print-component">
+                                <strong>${compName}</strong><br>
+                                Quantity: ${workOrder.required_sets}
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="print-footer">
+                        <p>Generated: ${new Date().toLocaleString()}</p>
+                    </div>
+                `;
+                
+                printContainer.appendChild(printableDiv);
+            });
+            
+            // Show print dialog
+            printContainer.style.display = 'block';
+            window.print();
+            printContainer.style.display = 'none';
         }
         
         // Update set analysis display
@@ -1329,11 +1720,6 @@ HTML_TEMPLATE = '''
             
             // Reset input
             qtyInput.value = '0';
-            
-            // Check for newly completable orders
-            setTimeout(() => {
-                checkForCompletableOrders();
-            }, 500);
         }
         
         function addReturn(itemId) {
@@ -1354,37 +1740,6 @@ HTML_TEMPLATE = '''
             
             // Reset input
             qtyInput.value = '0';
-            
-            // Check for newly completable orders
-            setTimeout(() => {
-                checkForCompletableOrders();
-            }, 500);
-        }
-        
-        // Check if any orders became completable after inventory changes
-        function checkForCompletableOrders() {
-            let newlyCompletable = [];
-            
-            workOrders.forEach(workOrder => {
-                const components = getComponentsForSet(workOrder.set_type, workOrder.include_spacer);
-                let canComplete = true;
-                
-                components.forEach(componentName => {
-                    const component = currentInventory.find(item => item.name === componentName);
-                    if (!component || component.quantity < workOrder.required_sets) {
-                        canComplete = false;
-                    }
-                });
-                
-                if (canComplete && !recentlyCompletedOrders.includes(workOrder.id)) {
-                    newlyCompletable.push(workOrder.order_number);
-                }
-            });
-            
-            if (newlyCompletable.length > 0) {
-                // Force update of work order display to show alerts
-                updateWorkOrderDisplay();
-            }
         }
         
         // Work Order Functions
@@ -1425,12 +1780,8 @@ HTML_TEMPLATE = '''
             });
         }
         
-        function completeWorkOrder(workOrderId) {
-            if (!confirm('Mark this work order as complete? This will deduct components from inventory.')) {
-                return;
-            }
-            
-            fetch('/api/complete_work_order', {
+        function moveToAssembly(workOrderId) {
+            fetch('/api/move_to_assembly', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1440,13 +1791,10 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert('Work order completed successfully! Components deducted from inventory.');
+                    console.log('Work order moved to Assembly Line automatically');
                     socket.emit('get_inventory');
-                    
-                    // Remove from recently completed list
-                    recentlyCompletedOrders = recentlyCompletedOrders.filter(id => id !== workOrderId);
                 } else {
-                    alert('Error: ' + data.error);
+                    console.log('Error moving to assembly: ' + data.error);
                 }
             });
         }
@@ -1467,6 +1815,39 @@ HTML_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     alert('Work order deleted successfully!');
+                    socket.emit('get_inventory');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+        
+        // Assembly Line Functions
+        function loadAssemblyOrders() {
+            fetch('/api/assembly_orders')
+                .then(response => response.json())
+                .then(data => {
+                    assemblyOrders = data.assembly_orders || [];
+                    updateAssemblyDisplay();
+                });
+        }
+        
+        function completeAssembly(assemblyOrderId) {
+            if (!confirm('Mark this assembly as complete? This will deduct components from inventory.')) {
+                return;
+            }
+            
+            fetch('/api/complete_assembly', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    assembly_order_id: assemblyOrderId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Assembly completed successfully! Components deducted from inventory.');
                     socket.emit('get_inventory');
                 } else {
                     alert('Error: ' + data.error);
@@ -1511,6 +1892,157 @@ HTML_TEMPLATE = '''
         
         function exportInventoryJSON() {
             window.open('/api/inventory_json', '_blank');
+        }
+        
+        // External Orders Functions
+        function uploadCSV() {
+            const fileInput = document.getElementById('csvFile');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                alert('Please select a CSV file to upload');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('csv_file', file);
+            
+            fetch('/api/upload_csv', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('CSV uploaded successfully! ' + data.message);
+                    document.getElementById('csvFile').value = '';
+                    loadExternalOrders();
+                    socket.emit('get_inventory');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                alert('Upload failed: ' + error);
+            });
+        }
+        
+        function loadExternalOrders() {
+            fetch('/api/external_orders')
+                .then(response => response.json())
+                .then(data => {
+                    updateExternalOrdersDisplay(data.orders);
+                });
+        }
+        
+        function updateExternalOrdersDisplay(orders) {
+            const container = document.getElementById('external-orders-list');
+            container.innerHTML = '';
+            
+            if (orders.length === 0) {
+                container.innerHTML = '<div class="external-order-item">No external work orders found</div>';
+                return;
+            }
+            
+            orders.forEach(order => {
+                const requiredBrackets = Array.isArray(order.required_brackets) ? order.required_brackets : JSON.parse(order.required_brackets || '[]');
+                
+                container.innerHTML += `
+                    <div class="external-order-item">
+                        <div class="work-order-header">
+                            <div class="work-order-title">${order.external_order_number}</div>
+                            <div class="work-order-actions">
+                                <button class="btn-convert" onclick="convertExternalOrder(${order.id})">Convert to Work Order</button>
+                                <button class="btn-complete" onclick="completeExternalOrder(${order.id})">Complete</button>
+                                <button class="btn-delete" onclick="deleteExternalOrder(${order.id})">Delete</button>
+                            </div>
+                        </div>
+                        <div class="external-order-info">
+                            <div class="external-order-detail">
+                                <strong>SKU</strong>
+                                ${order.sku}
+                            </div>
+                            <div class="external-order-detail">
+                                <strong>Quantity</strong>
+                                ${order.quantity} sets
+                            </div>
+                            <div class="external-order-detail">
+                                <strong>GPU Brackets</strong>
+                                ${requiredBrackets.join(', ')}
+                            </div>
+                        </div>
+                        <div style="margin-top: 6px; font-size: 12px;">
+                            <strong>Status:</strong> ${order.status} | 
+                            <strong>Created:</strong> ${new Date(order.created_at).toLocaleString()}
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        function convertExternalOrder(orderId) {
+            if (!confirm('Convert this external order to a regular work order?')) {
+                return;
+            }
+            
+            fetch('/api/convert_external_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ external_order_id: orderId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('External order converted to work order successfully!');
+                    loadExternalOrders();
+                    socket.emit('get_inventory');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+        
+        function completeExternalOrder(orderId) {
+            if (!confirm('Mark this external work order as complete?')) {
+                return;
+            }
+            
+            fetch('/api/complete_external_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order_id: orderId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('External work order completed successfully!');
+                    loadExternalOrders();
+                    socket.emit('get_inventory');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+        
+        function deleteExternalOrder(orderId) {
+            if (!confirm('Delete this external work order?')) {
+                return;
+            }
+            
+            fetch('/api/delete_external_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ order_id: orderId })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('External work order deleted successfully!');
+                    loadExternalOrders();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
         }
         
         // History functions
@@ -1687,6 +2219,50 @@ HTML_TEMPLATE = '''
             });
         }
         
+        function loadCompanySettings() {
+            if (currentUserRole !== 'admin') return;
+            
+            fetch('/api/company_settings')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        document.getElementById('skuMapping').value = JSON.stringify(data.sku_mapping || {}, null, 2);
+                        document.getElementById('skuSetMapping').value = JSON.stringify(data.sku_set_mapping || {}, null, 2);
+                    }
+                });
+        }
+        
+        function saveSkuMapping() {
+            const skuMappingText = document.getElementById('skuMapping').value;
+            const skuSetMappingText = document.getElementById('skuSetMapping').value;
+            
+            try {
+                const skuMapping = JSON.parse(skuMappingText);
+                const skuSetMapping = JSON.parse(skuSetMappingText);
+                
+                fetch('/api/sku_mapping', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        sku_mapping: skuMapping,
+                        sku_set_mapping: skuSetMapping
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('SKU mapping saved successfully!');
+                        socket.emit('get_inventory');
+                        loadExternalOrders();
+                        } else {
+                        alert('Error: ' + data.error);
+                    }
+                });
+            } catch (e) {
+                alert('Invalid JSON format for SKU mapping');
+            }
+        }
+        
         function updateSlackWebhook() {
             const webhook = document.getElementById('slackWebhook').value;
             
@@ -1719,71 +2295,18 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // API Integration Functions
-        function loadApiSettings() {
-            fetch('/api/api_settings')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('externalApiUrl').value = data.api_url || '';
-                        document.getElementById('externalApiKey').value = data.api_key || '';
-                    }
-                });
-        }
-        
-        function saveApiSettings() {
-            const apiUrl = document.getElementById('externalApiUrl').value;
-            const apiKey = document.getElementById('externalApiKey').value;
-            
-            fetch('/api/api_settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    api_url: apiUrl,
-                    api_key: apiKey
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('API settings saved successfully!');
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            });
-        }
-        
-        function syncFromExternalApi() {
-            if (!confirm('This will sync inventory from the external API. Continue?')) {
-                return;
-            }
-            
-            fetch('/api/sync_external', {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    alert('Inventory synced successfully from external API!');
-                    socket.emit('get_inventory');
-                } else {
-                    alert('Error: ' + data.error);
-                }
-            });
-        }
-        
         // Load history when page loads
         window.onload = function() {
             if (currentUserRole !== 'viewer') {
                 loadHistory();
+                loadExternalOrders();
+                loadAssemblyOrders();
             }
         };
     </script>
 </body>
 </html>
 '''
-
-# ... [REST OF THE PYTHON CODE REMAINS EXACTLY THE SAME AS BEFORE, JUST REMOVE THE PDF EXPORT FUNCTION AND ADD CSV EXPORT] ...
 
 def hash_password(password):
     """Hash a password for storing."""
@@ -1799,6 +2322,8 @@ def init_database():
     c.execute("DROP TABLE IF EXISTS work_orders")
     c.execute("DROP TABLE IF EXISTS users")
     c.execute("DROP TABLE IF EXISTS settings")
+    c.execute("DROP TABLE IF EXISTS external_work_orders")
+    c.execute("DROP TABLE IF EXISTS assembly_orders")
     
     # Create items table
     c.execute('''CREATE TABLE items
@@ -1830,6 +2355,29 @@ def init_database():
                   include_spacer BOOLEAN DEFAULT 0,
                   status TEXT DEFAULT 'active',
                   created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Create external_work_orders table for scraped orders
+    c.execute('''CREATE TABLE external_work_orders
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  external_order_number TEXT NOT NULL UNIQUE,
+                  sku TEXT NOT NULL,
+                  quantity INTEGER NOT NULL,
+                  required_brackets TEXT NOT NULL,
+                  status TEXT DEFAULT 'active',
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  last_synced DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+    
+    # Create assembly_orders table for assembly line
+    c.execute('''CREATE TABLE assembly_orders
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  work_order_id INTEGER NOT NULL,
+                  status TEXT DEFAULT 'ready',  -- ready, building, completed, cancelled
+                  moved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  started_at DATETIME,
+                  completed_at DATETIME,
+                  assembled_by TEXT,
+                  notes TEXT,
+                  FOREIGN KEY (work_order_id) REFERENCES work_orders (id))''')
     
     # Create users table
     c.execute('''CREATE TABLE users
@@ -1887,8 +2435,8 @@ def init_database():
         ('low_stock_threshold', '5'),
         ('critical_stock_threshold', '2'),
         ('slack_webhook_url', SLACK_WEBHOOK_URL),
-        ('external_api_url', ''),
-        ('external_api_key', '')
+        ('sku_mapping', json.dumps(SKU_BRACKET_MAPPING)),
+        ('sku_set_mapping', json.dumps(SKU_SET_MAPPING))
     ]
     
     for setting in default_settings:
@@ -1909,11 +2457,38 @@ def get_setting(key, default=None):
     conn.close()
     return setting['value'] if setting else default
 
+def update_setting(key, value):
+    conn = get_db()
+    conn.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+    conn.commit()
+    conn.close()
+
+def get_sku_mapping():
+    """Get SKU to bracket mapping from settings"""
+    mapping_json = get_setting('sku_mapping', '{}')
+    try:
+        return json.loads(mapping_json)
+    except:
+        return SKU_BRACKET_MAPPING
+
+def get_sku_set_mapping():
+    """Get SKU to set type mapping from settings"""
+    mapping_json = get_setting('sku_set_mapping', '{}')
+    try:
+        return json.loads(mapping_json)
+    except:
+        return SKU_SET_MAPPING
+
 def send_slack_notification(message):
-    """Send notification to Slack"""
+    """Send notification to Slack with improved error handling"""
     webhook_url = get_setting('slack_webhook_url')
     if not webhook_url:
         print("❌ No Slack webhook URL configured")
+        return False
+    
+    # Validate webhook URL format
+    if not webhook_url.startswith('https://hooks.slack.com/services/'):
+        print("❌ Invalid Slack webhook URL format")
         return False
     
     try:
@@ -1922,20 +2497,1059 @@ def send_slack_notification(message):
             "username": "Bracket Inventory Tracker",
             "icon_emoji": ":package:"
         }
-        response = requests.post(webhook_url, json=payload)
+        
+        # Add timeout and better error handling
+        response = requests.post(
+            webhook_url, 
+            json=payload, 
+            timeout=10,
+            headers={'Content-Type': 'application/json'}
+        )
+        
         if response.status_code == 200:
             print("✅ Slack notification sent successfully")
             return True
         else:
             print(f"❌ Slack notification failed with status: {response.status_code}")
+            print(f"Response: {response.text}")
             return False
+            
+    except requests.exceptions.Timeout:
+        print("❌ Slack notification timed out")
+        return False
+    except requests.exceptions.ConnectionError:
+        print("❌ Slack notification connection error")
+        return False
     except Exception as e:
         print(f"❌ Slack notification failed: {e}")
         return False
 
-# ... [ALL THE OTHER FUNCTIONS REMAIN EXACTLY THE SAME AS BEFORE] ...
+def convert_external_to_work_order(external_order):
+    """Convert an external work order to a regular work order"""
+    conn = get_db()
+    
+    try:
+        # Get SKU to set type mapping
+        sku_set_mapping = get_sku_set_mapping()
+        
+        # Determine set type from SKU
+        set_type = sku_set_mapping.get(external_order['sku'], 'H6')  # Default to H6 if not found
+        
+        # Check if work order already exists
+        existing = conn.execute(
+            'SELECT id FROM work_orders WHERE order_number = ?',
+            (external_order['external_order_number'],)
+        ).fetchone()
+        
+        if existing:
+            print(f"⚠️ Work order {external_order['external_order_number']} already exists")
+            return False
+        
+        # Create new work order
+        conn.execute('''
+            INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+            VALUES (?, ?, ?, ?)
+        ''', (
+            external_order['external_order_number'],
+            set_type,
+            external_order['quantity'],
+            0  # Default to no spacer
+        ))
+        
+        print(f"✅ Converted external order {external_order['external_order_number']} to work order")
+        
+        # Get current inventory for notification
+        items = conn.execute('SELECT * FROM items').fetchall()
+        current_inventory = [dict(item) for item in items]
+        
+        # Get the created work order
+        work_order = conn.execute(
+            'SELECT * FROM work_orders WHERE order_number = ?', 
+            (external_order['external_order_number'],)
+        ).fetchone()
+        
+        conn.commit()
+        
+        # Send Slack notification for the new work order
+        if work_order:
+            send_work_order_notification(dict(work_order), current_inventory)
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error converting external order: {str(e)}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
-# Replace the PDF export with CSV export
+def send_work_order_notification(work_order, current_inventory):
+    """Send detailed notification when a new work order is created"""
+    components = get_components_for_set_type(work_order['set_type'], work_order.get('include_spacer', False))
+    
+    # Check inventory status
+    inventory_status = []
+    missing_components = []
+    can_complete = True
+    
+    for component in components:
+        item = next((item for item in current_inventory if item['name'] == component), None)
+        available = item['quantity'] if item else 0
+        required = work_order['required_sets']
+        short_by = max(0, required - available)
+        
+        status_emoji = "✅" if available >= required else "❌"
+        inventory_status.append(f"{status_emoji} {component}: {available} / {required} (Short by {short_by})")
+        
+        if available < required:
+            can_complete = False
+            missing_components.append(f"• {component}: Need {short_by} more")
+    
+    # Build the notification message
+    message = f":clipboard: *NEW WORK ORDER CREATED*\n\n"
+    message += f"*Order #:* {work_order['order_number']}\n"
+    message += f"*Set Type:* {work_order['set_type']}\n"
+    message += f"*Required Sets:* {work_order['required_sets']}\n\n"
+    
+    message += f":package: *CURRENT INVENTORY STATUS:*\n"
+    message += "\n".join(inventory_status) + "\n\n"
+    
+    if not can_complete:
+        message += f":rotating_light: *MISSING COMPONENTS:*\n"
+        message += "\n".join(missing_components) + "\n\n"
+    else:
+        message += f"✅ *READY TO ASSEMBLE - All components available!*\n\n"
+    
+    message += f"Work order has been added to the system"
+    
+    return send_slack_notification(message)
+
+def send_printing_notification(item_name, change, new_quantity):
+    """Send notification for printing station updates"""
+    message = f":printer: *PRINTING STATION UPDATE*\n\n"
+    message += f"*Component:* {item_name}\n"
+    message += f"*Added Quantity:* +{change} units\n"
+    message += f"*New Total:* {new_quantity} units\n\n"
+    message += f"Inventory updated via Printing Station"
+    
+    return send_slack_notification(message)
+
+def send_inventory_change_notification(item_name, change, station, notes=""):
+    """Send notification for any inventory change"""
+    action_emoji = "📈" if change > 0 else "📉"
+    action_type = "ADDED" if change > 0 else "REMOVED"
+    
+    message = f"{action_emoji} *INVENTORY UPDATE - {action_type}*\n\n"
+    message += f"*Component:* {item_name}\n"
+    message += f"*Quantity Change:* {change:+d} units\n"
+    message += f"*Station:* {station}\n"
+    
+    if notes:
+        message += f"*Notes:* {notes}\n"
+    
+    message += f"\nInventory has been updated"
+    
+    return send_slack_notification(message)
+
+def send_assembly_notification(work_order, action, assembled_by=None):
+    """Send notification for assembly line activities"""
+    if action == "moved":
+        message = f"🏭 *ORDER MOVED TO ASSEMBLY LINE*\n\n"
+        message += f"*Order #:* {work_order['order_number']}\n"
+        message += f"*Set Type:* {work_order['set_type']}\n"
+        message += f"*Required Sets:* {work_order['required_sets']}\n\n"
+        message += f"Order is now ready for assembly!"
+        
+    elif action == "started":
+        message = f"🔧 *ASSEMBLY STARTED*\n\n"
+        message += f"*Order #:* {work_order['order_number']}\n"
+        message += f"*Set Type:* {work_order['set_type']}\n"
+        message += f"*Required Sets:* {work_order['required_sets']}\n"
+        if assembled_by:
+            message += f"*Assembled by:* {assembled_by}\n\n"
+        message += f"Assembly process has begun!"
+        
+    elif action == "completed":
+        message = f"🎉 *ASSEMBLY COMPLETED*\n\n"
+        message += f"*Order #:* {work_order['order_number']}\n"
+        message += f"*Set Type:* {work_order['set_type']}\n"
+        message += f"*Completed Sets:* {work_order['required_sets']}\n"
+        if assembled_by:
+            message += f"*Assembled by:* {assembled_by}\n\n"
+        message += f"Great work! Order has been completed successfully! 🎉"
+        
+    elif action == "cancelled":
+        message = f"↩️ *ASSEMBLY CANCELLED*\n\n"
+        message += f"*Order #:* {work_order['order_number']}\n"
+        message += f"*Set Type:* {work_order['set_type']}\n"
+        message += f"*Required Sets:* {work_order['required_sets']}\n\n"
+        message += f"Order has been returned to picking station"
+    
+    return send_slack_notification(message)
+
+def get_components_for_set_type(set_type, include_spacer=False):
+    """Get components for a set type"""
+    component_map = {
+        'H6': ['H6-623A', 'H6-623B', 'H6-623C'],
+        'H7-282': ['H7-282'],
+        'H7-304': ['H7-304'],
+        'H9': ['H9-923A', 'H9-923B', 'H9-923C'] + (['H9-SPACER'] if include_spacer else [])
+    }
+    return component_map.get(set_type, [])
+
+def process_csv_upload(file_content):
+    """Process CSV file upload for external orders"""
+    try:
+        # Decode the file content
+        csv_text = file_content.decode('utf-8')
+        csv_reader = csv.DictReader(csv_text.splitlines())
+        
+        required_columns = ['OrderNumber', 'SKU', 'Quantity']
+        
+        # Validate CSV structure
+        if not all(col in csv_reader.fieldnames for col in required_columns):
+            return {'success': False, 'error': f'CSV must contain columns: {", ".join(required_columns)}'}
+        
+        scraped_orders = []
+        
+        for row in csv_reader:
+            try:
+                order_number = row['OrderNumber'].strip()
+                sku = row['SKU'].strip()
+                quantity = int(row['Quantity'])
+                
+                if order_number and sku and quantity > 0:
+                    scraped_orders.append({
+                        'wo_number': order_number,
+                        'oem_po_number': order_number,
+                        'sku': sku,
+                        'qty': str(quantity),
+                        'status': 'active'
+                    })
+            except (ValueError, KeyError) as e:
+                print(f"⚠️ Error parsing CSV row: {e}")
+                continue
+        
+        print(f"✅ Processed {len(scraped_orders)} orders from CSV")
+        return {'success': True, 'orders': scraped_orders}
+        
+    except Exception as e:
+        print(f"❌ CSV processing error: {str(e)}")
+        return {'success': False, 'error': f'Failed to process CSV: {str(e)}'}
+
+def check_bracket_availability(required_brackets, quantity):
+    """Check if we have enough brackets for an order"""
+    conn = get_db()
+    missing_brackets = []
+    
+    for bracket in required_brackets:
+        item = conn.execute('SELECT * FROM items WHERE name = ?', (bracket,)).fetchone()
+        if not item or item['quantity'] < quantity:
+            missing_brackets.append({
+                'name': bracket,
+                'required': quantity,
+                'available': item['quantity'] if item else 0,
+                'missing': quantity - (item['quantity'] if item else 0)
+            })
+    
+    conn.close()
+    return missing_brackets
+
+def broadcast_update():
+    conn = get_db()
+    
+    items = conn.execute('SELECT * FROM items ORDER BY name').fetchall()
+    recent_activity = conn.execute('''
+        SELECT t.*, i.name as item_name 
+        FROM transactions t 
+        JOIN items i ON t.item_id = i.id 
+        ORDER BY t.timestamp DESC 
+        LIMIT 10
+    ''').fetchall()
+    
+    work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active' ORDER BY set_type, created_at").fetchall()
+    assembly_orders = conn.execute('''
+        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+        FROM assembly_orders ao
+        JOIN work_orders wo ON ao.work_order_id = wo.id
+        ORDER BY 
+            CASE WHEN ao.status = 'ready' THEN 1
+                 WHEN ao.status = 'building' THEN 2
+                 WHEN ao.status = 'completed' THEN 3
+                 ELSE 4 END,
+            ao.moved_at DESC
+    ''').fetchall()
+    
+    conn.close()
+    
+    items_data = [dict(item) for item in items]
+    activity_data = [dict(act) for act in recent_activity]
+    work_orders_data = [dict(wo) for wo in work_orders]
+    assembly_orders_data = [dict(ao) for ao in assembly_orders]
+    
+    # Convert to 12-hour format
+    now = datetime.now()
+    timestamp_12hr = now.strftime("%I:%M:%S %p").lstrip('0')
+    
+    socketio.emit('inventory_update', {
+        'items': items_data,
+        'recent_activity': activity_data,
+        'work_orders': work_orders_data,
+        'assembly_orders': assembly_orders_data,
+        'timestamp': timestamp_12hr
+    })
+
+# Authentication decorators
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'success': False, 'error': 'Authentication required'}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+def role_required(role):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if 'user_id' not in session:
+                return jsonify({'success': False, 'error': 'Authentication required'}), 401
+            if session['role'] not in ['admin', 'operator'] and role in ['admin', 'operator']:
+                return jsonify({'success': False, 'error': 'Insufficient permissions'}), 403
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+# SocketIO events
+@socketio.on('connect')
+def handle_connect():
+    print(f"🔗 Client connected: {request.sid}")
+    broadcast_update()
+
+@socketio.on('inventory_change')
+@login_required
+def handle_inventory_change(data):
+    try:
+        # Check if user has operator or admin role
+        if session['role'] not in ['admin', 'operator']:
+            socketio.emit('error', {'message': 'Insufficient permissions'}, room=request.sid)
+            return
+            
+        item_id = data.get('item_id')
+        change = data.get('change')
+        station = data.get('station', 'Unknown')
+        notes = data.get('notes', '')
+        
+        if not item_id:
+            socketio.emit('error', {'message': 'Item ID is required'}, room=request.sid)
+            return
+        
+        conn = get_db()
+        
+        item = conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone()
+        if not item:
+            socketio.emit('error', {'message': 'Item not found'}, room=request.sid)
+            return
+        
+        new_quantity = item['quantity'] + change
+        
+        if new_quantity < 0:
+            socketio.emit('error', {
+                'message': f'Cannot remove {abs(change)}. Only {item["quantity"]} available.'
+            }, room=request.sid)
+            return
+        
+        conn.execute('UPDATE items SET quantity = ? WHERE id = ?', (new_quantity, item_id))
+        
+        # Record transaction with username
+        conn.execute('''
+            INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (item_id, change, station, notes, session['username'], datetime.now()))
+        
+        # Send Slack notification for inventory changes
+        if station == 'Printing Station':
+            send_printing_notification(item['name'], change, new_quantity)
+        else:
+            send_inventory_change_notification(item['name'], change, station, notes)
+        
+        # Check for low stock and send additional Slack notification
+        low_threshold = int(get_setting('low_stock_threshold', 5))
+        critical_threshold = int(get_setting('critical_stock_threshold', 2))
+        
+        if new_quantity <= critical_threshold:
+            message = f"🔴 *CRITICAL STOCK ALERT*\n\n*Component:* {item['name']}\n*Current Stock:* {new_quantity} units\n*Critical Threshold:* {critical_threshold} units\n\n*Action Required:* Please restock immediately!"
+            send_slack_notification(message)
+        elif new_quantity <= low_threshold:
+            message = f"🟡 *LOW STOCK WARNING*\n\n*Component:* {item['name']}\n*Current Stock:* {new_quantity} units\n*Low Threshold:* {low_threshold} units\n\n*Action Suggested:* Consider restocking soon."
+            send_slack_notification(message)
+        
+        conn.commit()
+        conn.close()
+        
+        broadcast_update()
+        
+        print(f"📊 {session['username']} at {station}: {item['name']} {change:+d} = {new_quantity}")
+        
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        socketio.emit('error', {'message': f'Error: {str(e)}'}, room=request.sid)
+
+# Flask routes
+@app.route('/')
+def index():
+    if 'user_id' not in session:
+        return render_template_string(HTML_TEMPLATE, slack_webhook=get_setting('slack_webhook_url', ''))
+    
+    return render_template_string(HTML_TEMPLATE, 
+                                username=session['username'],
+                                role=session['role'],
+                                slack_webhook=get_setting('slack_webhook_url', ''))
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password are required'})
+    
+    conn = get_db()
+    user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    conn.close()
+    
+    if user and user['password_hash'] == hash_password(password):
+        session['user_id'] = user['id']
+        session['username'] = user['username']
+        session['role'] = user['role']
+        return jsonify({'success': True, 'message': 'Login successful'})
+    else:
+        return jsonify({'success': False, 'error': 'Invalid username or password'})
+
+@app.route('/api/logout')
+def logout():
+    session.clear()
+    return jsonify({'success': True, 'message': 'Logout successful'})
+
+# Assembly Line API Routes
+@app.route('/api/assembly_orders')
+@login_required
+def get_assembly_orders():
+    """Get all assembly orders"""
+    conn = get_db()
+    assembly_orders = conn.execute('''
+        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+        FROM assembly_orders ao
+        JOIN work_orders wo ON ao.work_order_id = wo.id
+        ORDER BY 
+            CASE WHEN ao.status = 'ready' THEN 1
+                 WHEN ao.status = 'building' THEN 2
+                 WHEN ao.status = 'completed' THEN 3
+                 ELSE 4 END,
+            ao.moved_at DESC
+    ''').fetchall()
+    conn.close()
+    
+    assembly_orders_data = [dict(order) for order in assembly_orders]
+    return jsonify({'assembly_orders': assembly_orders_data})
+
+@app.route('/api/move_to_assembly', methods=['POST'])
+@login_required
+@role_required('operator')
+def move_to_assembly():
+    """Move a work order to assembly line"""
+    data = request.get_json()
+    work_order_id = data.get('work_order_id')
+    
+    if not work_order_id:
+        return jsonify({'success': False, 'error': 'Work order ID is required'})
+    
+    conn = get_db()
+    
+    try:
+        # Check if work order exists and is active
+        work_order = conn.execute('SELECT * FROM work_orders WHERE id = ? AND status = "active"', (work_order_id,)).fetchone()
+        if not work_order:
+            return jsonify({'success': False, 'error': 'Active work order not found'})
+        
+        # Check if already in assembly
+        existing_assembly = conn.execute('SELECT id FROM assembly_orders WHERE work_order_id = ? AND status IN ("ready", "building")', (work_order_id,)).fetchone()
+        if existing_assembly:
+            return jsonify({'success': False, 'error': 'Work order is already in assembly line'})
+        
+        # Check if components are available
+        components = get_components_for_set_type(work_order['set_type'], work_order['include_spacer'])
+        for component in components:
+            item = conn.execute('SELECT * FROM items WHERE name = ?', (component,)).fetchone()
+            if not item or item['quantity'] < work_order['required_sets']:
+                return jsonify({'success': False, 'error': f'Not enough {component} available'})
+        
+        # Create assembly order
+        conn.execute('''
+            INSERT INTO assembly_orders (work_order_id, status, moved_at)
+            VALUES (?, 'ready', ?)
+        ''', (work_order_id, datetime.now()))
+        
+        conn.commit()
+        conn.close()
+        
+        # Send Slack notification
+        send_assembly_notification(dict(work_order), "moved")
+        
+        broadcast_update()
+        return jsonify({'success': True, 'message': 'Work order moved to assembly line successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/complete_assembly', methods=['POST'])
+@login_required
+@role_required('operator')
+def complete_assembly():
+    """Complete an assembly order and deduct components"""
+    data = request.get_json()
+    assembly_order_id = data.get('assembly_order_id')
+    
+    if not assembly_order_id:
+        return jsonify({'success': False, 'error': 'Assembly order ID is required'})
+    
+    conn = get_db()
+    
+    try:
+        # Get assembly order with work order details
+        assembly_order = conn.execute('''
+            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer, wo.id as work_order_id
+            FROM assembly_orders ao
+            JOIN work_orders wo ON ao.work_order_id = wo.id
+            WHERE ao.id = ? AND ao.status = 'ready'
+        ''', (assembly_order_id,)).fetchone()
+        
+        if not assembly_order:
+            return jsonify({'success': False, 'error': 'Ready assembly order not found'})
+        
+        # Get components for this set type
+        components = get_components_for_set_type(assembly_order['set_type'], assembly_order['include_spacer'])
+        
+        # Deduct components from inventory
+        for component in components:
+            conn.execute('UPDATE items SET quantity = quantity - ? WHERE name = ?', 
+                        (assembly_order['required_sets'], component))
+            
+            # Log the transaction
+            item = conn.execute('SELECT id FROM items WHERE name = ?', (component,)).fetchone()
+            if item:
+                conn.execute('''
+                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (item['id'], -assembly_order['required_sets'], 'Assembly Line', 
+                      f'Assembly order {assembly_order["order_number"]} completed', session['username'], datetime.now()))
+        
+        # Update assembly order status
+        conn.execute('''
+            UPDATE assembly_orders 
+            SET status = 'completed', completed_at = ?, assembled_by = ?
+            WHERE id = ?
+        ''', (datetime.now(), session['username'], assembly_order_id))
+        
+        # Mark work order as completed
+        conn.execute('UPDATE work_orders SET status = "completed" WHERE id = ?', (assembly_order['work_order_id'],))
+        
+        conn.commit()
+        conn.close()
+        
+        # Send Slack notification
+        send_assembly_notification(dict(assembly_order), "completed", session['username'])
+        
+        broadcast_update()
+        return jsonify({'success': True, 'message': 'Assembly completed successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# External Orders API Routes
+@app.route('/api/upload_csv', methods=['POST'])
+@login_required
+@role_required('operator')
+def upload_csv():
+    """Upload and process CSV file for external orders"""
+    try:
+        if 'csv_file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file uploaded'})
+        
+        file = request.files['csv_file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'})
+        
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({'success': False, 'error': 'File must be a CSV'})
+        
+        # Process the CSV file
+        file_content = file.read()
+        csv_result = process_csv_upload(file_content)
+        
+        if not csv_result['success']:
+            return jsonify({'success': False, 'error': csv_result['error']})
+        
+        # Process the orders from CSV
+        conn = get_db()
+        sku_mapping = get_sku_mapping()
+        new_orders = []
+        converted_count = 0
+        
+        for order in csv_result['orders']:
+            # Check if this order already exists
+            existing = conn.execute(
+                'SELECT id FROM external_work_orders WHERE external_order_number = ?',
+                (order['oem_po_number'],)
+            ).fetchone()
+            
+            if not existing:
+                # Create new external work order
+                sku = order['sku']
+                quantity = int(order['qty'])
+                required_brackets = sku_mapping.get(sku, [])
+                
+                if required_brackets:  # Only create if we have a mapping
+                    conn.execute('''
+                        INSERT INTO external_work_orders 
+                        (external_order_number, sku, quantity, required_brackets, last_synced)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (order['oem_po_number'], sku, quantity, json.dumps(required_brackets), datetime.now()))
+                    
+                    new_order = {
+                        'external_order_number': order['oem_po_number'],
+                        'sku': sku,
+                        'quantity': quantity,
+                        'required_brackets': required_brackets
+                    }
+                    new_orders.append(new_order)
+                    print(f"✅ Created external order: {order['oem_po_number']} for SKU {sku}")
+                    
+                    # Convert to regular work order
+                    if convert_external_to_work_order(new_order):
+                        converted_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        # Send notifications
+        for order in new_orders:
+            missing_brackets = check_bracket_availability(order['required_brackets'], order['quantity'])
+            
+            if missing_brackets:
+                missing_list = ", ".join([f"{mb['name']} (need {mb['missing']})" for mb in missing_brackets])
+                message = f"🚨 *CSV UPLOAD - MISSING BRACKETS*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Quantity:* {order['quantity']}\n*Missing Brackets:* {missing_list}\n\n*Action Required:* Please print additional brackets."
+                send_slack_notification(message)
+            else:
+                message = f"✅ *CSV UPLOAD - READY TO PICK*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Quantity:* {order['quantity']}\n*Brackets Needed:* {', '.join(order['required_brackets'])}\n\nAll brackets are available for picking."
+                send_slack_notification(message)
+        
+        broadcast_update()
+        
+        result_message = f'Uploaded {len(new_orders)} orders from CSV'
+        if converted_count > 0:
+            result_message += f' and converted {converted_count} to work orders'
+        
+        return jsonify({
+            'success': True,
+            'message': result_message,
+            'new_orders': len(new_orders),
+            'converted_orders': converted_count
+        })
+        
+    except Exception as e:
+        print(f"❌ CSV upload error: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/external_orders')
+@login_required
+def get_external_orders():
+    """Get all external work orders"""
+    conn = get_db()
+    orders = conn.execute('''
+        SELECT * FROM external_work_orders 
+        ORDER BY created_at DESC
+    ''').fetchall()
+    conn.close()
+    
+    orders_data = []
+    for order in orders:
+        orders_data.append({
+            'id': order['id'],
+            'external_order_number': order['external_order_number'],
+            'sku': order['sku'],
+            'quantity': order['quantity'],
+            'required_brackets': json.loads(order['required_brackets']),
+            'status': order['status'],
+            'created_at': order['created_at'],
+            'last_synced': order['last_synced']
+        })
+    
+    return jsonify({'orders': orders_data})
+
+@app.route('/api/convert_external_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def convert_external_order():
+    """Convert an external order to a regular work order"""
+    data = request.get_json()
+    external_order_id = data.get('external_order_id')
+    
+    if not external_order_id:
+        return jsonify({'success': False, 'error': 'External order ID is required'})
+    
+    conn = get_db()
+    
+    try:
+        # Get the external order
+        external_order = conn.execute('SELECT * FROM external_work_orders WHERE id = ?', (external_order_id,)).fetchone()
+        if not external_order:
+            return jsonify({'success': False, 'error': 'External order not found'})
+        
+        external_order_dict = {
+            'external_order_number': external_order['external_order_number'],
+            'sku': external_order['sku'],
+            'quantity': external_order['quantity'],
+            'required_brackets': json.loads(external_order['required_brackets'])
+        }
+        
+        # Convert to work order
+        success = convert_external_to_work_order(external_order_dict)
+        
+        if success:
+            # Mark external order as converted
+            conn.execute('UPDATE external_work_orders SET status = "converted" WHERE id = ?', (external_order_id,))
+            conn.commit()
+            conn.close()
+            
+            broadcast_update()
+            return jsonify({'success': True, 'message': 'External order converted to work order successfully'})
+        else:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Failed to convert external order'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/complete_external_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def complete_external_order():
+    """Mark an external work order as completed"""
+    data = request.get_json()
+    order_id = data.get('order_id')
+    
+    if not order_id:
+        return jsonify({'success': False, 'error': 'Order ID is required'})
+    
+    conn = get_db()
+    
+    try:
+        # Get the external order
+        order = conn.execute('SELECT * FROM external_work_orders WHERE id = ?', (order_id,)).fetchone()
+        if not order:
+            return jsonify({'success': False, 'error': 'External order not found'})
+        
+        # Deduct brackets from inventory
+        required_brackets = json.loads(order['required_brackets'])
+        for bracket in required_brackets:
+            conn.execute('UPDATE items SET quantity = quantity - ? WHERE name = ?', 
+                        (order['quantity'], bracket))
+            
+            # Log the transaction
+            item = conn.execute('SELECT id FROM items WHERE name = ?', (bracket,)).fetchone()
+            if item:
+                conn.execute('''
+                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (item['id'], -order['quantity'], 'External Order Completion', 
+                      f'External order {order["external_order_number"]} completed', session['username'], datetime.now()))
+        
+        # Mark external order as completed
+        conn.execute('UPDATE external_work_orders SET status = "completed" WHERE id = ?', (order_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Send completion notification
+        message = f"✅ *EXTERNAL ORDER COMPLETED*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Completed Quantity:* {order['quantity']}\n*Brackets Used:* {', '.join(required_brackets)}\n\nComponents have been deducted from inventory."
+        send_slack_notification(message)
+        
+        broadcast_update()
+        return jsonify({'success': True, 'message': 'External order completed successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/delete_external_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def delete_external_order():
+    """Delete an external work order"""
+    data = request.get_json()
+    order_id = data.get('order_id')
+    
+    if not order_id:
+        return jsonify({'success': False, 'error': 'Order ID is required'})
+    
+    conn = get_db()
+    conn.execute('DELETE FROM external_work_orders WHERE id = ?', (order_id,))
+    conn.commit()
+    conn.close()
+    
+    broadcast_update()
+    return jsonify({'success': True, 'message': 'External order deleted successfully'})
+
+# Company Settings API Routes
+@app.route('/api/company_settings', methods=['GET'])
+@login_required
+@role_required('admin')
+def company_settings():
+    sku_mapping = get_sku_mapping()
+    sku_set_mapping = get_sku_set_mapping()
+    
+    return jsonify({
+        'success': True,
+        'sku_mapping': sku_mapping,
+        'sku_set_mapping': sku_set_mapping
+    })
+
+@app.route('/api/sku_mapping', methods=['POST'])
+@login_required
+@role_required('admin')
+def update_sku_mapping():
+    """Update SKU to bracket mapping"""
+    data = request.get_json()
+    sku_mapping = data.get('sku_mapping', {})
+    sku_set_mapping = data.get('sku_set_mapping', {})
+    
+    update_setting('sku_mapping', json.dumps(sku_mapping))
+    update_setting('sku_set_mapping', json.dumps(sku_set_mapping))
+    
+    return jsonify({'success': True, 'message': 'SKU mapping updated successfully'})
+
+# Slack Integration Routes
+@app.route('/api/slack_webhook', methods=['POST'])
+@login_required
+@role_required('admin')
+def update_slack_webhook():
+    """Update Slack webhook URL"""
+    data = request.get_json()
+    webhook_url = data.get('webhook_url', '').strip()
+    
+    update_setting('slack_webhook_url', webhook_url)
+    
+    return jsonify({'success': True, 'message': 'Slack webhook updated successfully'})
+
+@app.route('/api/test_slack', methods=['POST'])
+@login_required
+@role_required('admin')
+def test_slack():
+    """Send test Slack notification"""
+    message = "🧪 *TEST NOTIFICATION*\n\nThis is a test message from your Bracket Inventory Tracker. If you can see this, your Slack integration is working correctly!"
+    
+    if send_slack_notification(message):
+        return jsonify({'success': True, 'message': 'Test notification sent successfully'})
+    else:
+        return jsonify({'success': False, 'error': 'Failed to send test notification'})
+
+# Work Order Routes
+@app.route('/api/add_work_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def add_work_order():
+    data = request.get_json()
+    order_number = data.get('order_number')
+    set_type = data.get('set_type')
+    required_sets = data.get('required_sets')
+    include_spacer = data.get('include_spacer', False)
+    
+    if not all([order_number, set_type, required_sets]):
+        return jsonify({'success': False, 'error': 'Missing required fields'})
+    
+    conn = get_db()
+    
+    try:
+        # Get current inventory for notification
+        items = conn.execute('SELECT * FROM items').fetchall()
+        current_inventory = [dict(item) for item in items]
+        
+        # Add work order
+        cursor = conn.execute('''
+            INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+            VALUES (?, ?, ?, ?)
+        ''', (order_number, set_type, required_sets, include_spacer))
+        
+        work_order_id = cursor.lastrowid
+        
+        # Get the created work order
+        work_order = conn.execute('SELECT * FROM work_orders WHERE id = ?', (work_order_id,)).fetchone()
+        
+        conn.commit()
+        
+        # Send detailed Slack notification
+        send_work_order_notification(dict(work_order), current_inventory)
+        
+        conn.close()
+        
+        broadcast_update()
+        return jsonify({'success': True, 'message': 'Work order added successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/delete_work_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def delete_work_order():
+    data = request.get_json()
+    work_order_id = data.get('work_order_id')
+    
+    if not work_order_id:
+        return jsonify({'success': False, 'error': 'Work order ID is required'})
+    
+    conn = get_db()
+    conn.execute('DELETE FROM work_orders WHERE id = ?', (work_order_id,))
+    conn.commit()
+    conn.close()
+    
+    broadcast_update()
+    return jsonify({'success': True, 'message': 'Work order deleted successfully'})
+
+# History Routes
+@app.route('/api/history')
+@login_required
+def get_history():
+    limit = request.args.get('limit', 50)
+    filter_type = request.args.get('filter', 'all')
+    
+    conn = get_db()
+    
+    query = '''
+        SELECT t.*, i.name as item_name, i.case_type 
+        FROM transactions t 
+        JOIN items i ON t.item_id = i.id 
+    '''
+    
+    if filter_type != 'all':
+        query += f" WHERE i.case_type = '{filter_type}'"
+    
+    query += ' ORDER BY t.timestamp DESC LIMIT ?'
+    
+    history = conn.execute(query, (limit,)).fetchall()
+    conn.close()
+    
+    history_data = [dict(record) for record in history]
+    return jsonify({'history': history_data})
+
+# User Management Routes
+@app.route('/api/users', methods=['GET', 'POST', 'DELETE'])
+@login_required
+@role_required('admin')
+def manage_users():
+    if request.method == 'GET':
+        conn = get_db()
+        users = conn.execute('SELECT id, username, role, created_at FROM users ORDER BY username').fetchall()
+        conn.close()
+        
+        users_data = [dict(user) for user in users]
+        return jsonify({'users': users_data})
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        role = data.get('role', 'viewer')
+        
+        if not username or not password:
+            return jsonify({'success': False, 'error': 'Username and password are required'})
+        
+        if role not in ['admin', 'operator', 'viewer']:
+            return jsonify({'success': False, 'error': 'Invalid role'})
+        
+        conn = get_db()
+        
+        try:
+            conn.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
+                        (username, hash_password(password), role))
+            conn.commit()
+            conn.close()
+            
+            return jsonify({'success': True, 'message': 'User added successfully'})
+            
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Username already exists'})
+        except Exception as e:
+            conn.close()
+            return jsonify({'success': False, 'error': str(e)})
+    
+    elif request.method == 'DELETE':
+        data = request.get_json()
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({'success': False, 'error': 'User ID is required'})
+        
+        conn = get_db()
+        
+        # Prevent deleting current user
+        current_user = conn.execute('SELECT id FROM users WHERE id = ?', (user_id,)).fetchone()
+        if current_user and current_user['id'] == session['user_id']:
+            conn.close()
+            return jsonify({'success': False, 'error': 'Cannot delete your own account'})
+        
+        conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'User deleted successfully'})
+
+@app.route('/api/users/role', methods=['POST'])
+@login_required
+@role_required('admin')
+def change_user_role():
+    data = request.get_json()
+    user_id = data.get('user_id')
+    role = data.get('role')
+    
+    if not user_id or not role:
+        return jsonify({'success': False, 'error': 'User ID and role are required'})
+    
+    if role not in ['admin', 'operator', 'viewer']:
+        return jsonify({'success': False, 'error': 'Invalid role'})
+    
+    conn = get_db()
+    conn.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True, 'message': 'User role updated successfully'})
+
+# Stock Settings Routes
+@app.route('/api/stock_settings', methods=['POST'])
+@login_required
+@role_required('admin')
+def update_stock_settings():
+    data = request.get_json()
+    low_stock = data.get('low_stock')
+    critical_stock = data.get('critical_stock')
+    
+    if low_stock is None or critical_stock is None:
+        return jsonify({'success': False, 'error': 'Both thresholds are required'})
+    
+    update_setting('low_stock_threshold', str(low_stock))
+    update_setting('critical_stock_threshold', str(critical_stock))
+    
+    return jsonify({'success': True, 'message': 'Stock settings updated successfully'})
+
+# Export Routes
 @app.route('/api/export/csv')
 @login_required
 def export_csv():
@@ -1951,6 +3565,17 @@ def export_csv():
         JOIN items i ON t.item_id = i.id 
         ORDER BY t.timestamp DESC 
         LIMIT 1000
+    ''').fetchall()
+    
+    # Get external orders
+    external_orders = conn.execute('SELECT * FROM external_work_orders ORDER BY created_at DESC').fetchall()
+    
+    # Get assembly orders
+    assembly_orders = conn.execute('''
+        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets
+        FROM assembly_orders ao
+        JOIN work_orders wo ON ao.work_order_id = wo.id
+        ORDER BY ao.moved_at DESC
     ''').fetchall()
     
     conn.close()
@@ -1990,6 +3615,42 @@ def export_csv():
             trans['notes'] or ''
         ])
     
+    writer.writerow([])
+    writer.writerow([])
+    
+    # Write external orders section
+    writer.writerow(["EXTERNAL WORK ORDERS"])
+    writer.writerow([])
+    writer.writerow(['Order Number', 'SKU', 'Quantity', 'Required Brackets', 'Status', 'Created At'])
+    for order in external_orders:
+        writer.writerow([
+            order['external_order_number'],
+            order['sku'],
+            order['quantity'],
+            order['required_brackets'],
+            order['status'],
+            order['created_at']
+        ])
+    
+    writer.writerow([])
+    writer.writerow([])
+    
+    # Write assembly orders section
+    writer.writerow(["ASSEMBLY LINE ORDERS"])
+    writer.writerow([])
+    writer.writerow(['Order Number', 'Set Type', 'Required Sets', 'Status', 'Moved At', 'Started At', 'Completed At', 'Assembled By'])
+    for order in assembly_orders:
+        writer.writerow([
+            order['order_number'],
+            order['set_type'],
+            order['required_sets'],
+            order['status'],
+            order['moved_at'],
+            order['started_at'],
+            order['completed_at'],
+            order['assembled_by'] or ''
+        ])
+    
     output.seek(0)
     
     return app.response_class(
@@ -1998,7 +3659,32 @@ def export_csv():
         headers={'Content-Disposition': 'attachment;filename=inventory_export.csv'}
     )
 
-# ... [ALL OTHER ROUTES AND SOCKET HANDLERS REMAIN EXACTLY THE SAME] ...
+@app.route('/api/inventory_json')
+@login_required
+def inventory_json():
+    conn = get_db()
+    
+    items = conn.execute('SELECT * FROM items ORDER BY case_type, name').fetchall()
+    work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active'").fetchall()
+    external_orders = conn.execute("SELECT * FROM external_work_orders WHERE status = 'active'").fetchall()
+    assembly_orders = conn.execute('''
+        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets
+        FROM assembly_orders ao
+        JOIN work_orders wo ON ao.work_order_id = wo.id
+        WHERE ao.status IN ('ready', 'building')
+    ''').fetchall()
+    
+    conn.close()
+    
+    inventory_data = {
+        'timestamp': datetime.now().isoformat(),
+        'inventory': [dict(item) for item in items],
+        'work_orders': [dict(wo) for wo in work_orders],
+        'external_orders': [dict(eo) for eo in external_orders],
+        'assembly_orders': [dict(ao) for ao in assembly_orders]
+    }
+    
+    return jsonify(inventory_data)
 
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
@@ -2009,4 +3695,3 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
-
