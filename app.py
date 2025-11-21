@@ -3713,15 +3713,21 @@ if __name__ == '__main__':
                 debug=False,
                 allow_unsafe_werkzeug=True)
 
-from app import app, socketio, init_database
-import os
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
-    print("👨‍💻 Developed by Your Name")
+    print("👨‍💻 Developed by Mark Calvo")
+    print("🌐 Render.com Compatible Version 2.4")
     init_database()
     print("✅ Database initialized")
-    print("🌐 Server starting...")
     
-    port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+    # Check if we're in production (Render sets RENDER=true)
+    is_render = os.environ.get('RENDER', 'false').lower() == 'true'
+    
+    if is_render:
+        print("🌐 Production mode - starting server...")
+        # In production, Render will use the wsgi.py file
+        socketio.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    else:
+        print("🔧 Development mode - starting server with debug...")
+        # In development, use debug mode
+        socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
