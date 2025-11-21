@@ -1,6 +1,3 @@
-from gevent import monkey
-monkey.patch_all()
-
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 import sqlite3
@@ -14,12 +11,16 @@ import io
 import requests
 import csv
 import time
-from bs4 import BeautifulSoup
-import re
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
+
+# Use threading instead of gevent for Render.com compatibility
+socketio = SocketIO(app, 
+                   cors_allowed_origins="*", 
+                   async_mode='threading',
+                   logger=True,
+                   engineio_logger=True)
 
 # Slack webhook URL for alerts
 SLACK_WEBHOOK_URL = os.environ.get('SLACK_WEBHOOK_URL', '')
@@ -1225,7 +1226,7 @@ HTML_TEMPLATE = '''
         <div class="developer-credit">
             Developed by <strong>Mark Calvo</strong> | 
             <a href="mailto:mark.calvo@premioinc.com">Contact</a> | 
-            Version 2.3 | 
+            Version 1.0 | 
             
         </div>
     </div>
@@ -1558,7 +1559,7 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // Print picking list
+        // Print picking list - IMPROVED VERSION
         function printPickingList() {
             const readyOrders = assemblyOrders.filter(order => order.status === 'ready');
             
@@ -1583,6 +1584,7 @@ HTML_TEMPLATE = '''
                         <h2>PICKING LIST</h2>
                         <h3>Work Order: ${workOrder.order_number}</h3>
                         <p>Set Type: ${workOrder.set_type} | Required Sets: ${workOrder.required_sets}</p>
+                        <p>Date: ${new Date().toLocaleDateString()}</p>
                     </div>
                     <div class="print-components">
                         ${components.map(compName => `
@@ -1594,6 +1596,7 @@ HTML_TEMPLATE = '''
                     </div>
                     <div class="print-footer">
                         <p>Generated: ${new Date().toLocaleString()}</p>
+                        <p>Bracket Inventory Tracker</p>
                     </div>
                 `;
                 
@@ -1602,8 +1605,15 @@ HTML_TEMPLATE = '''
             
             // Show print dialog
             printContainer.style.display = 'block';
-            window.print();
-            printContainer.style.display = 'none';
+            
+            // Use a small delay to ensure the content is rendered before printing
+            setTimeout(() => {
+                window.print();
+                // Hide after printing
+                setTimeout(() => {
+                    printContainer.style.display = 'none';
+                }, 100);
+            }, 100);
         }
         
         // Update set analysis display
@@ -3689,9 +3699,16 @@ def inventory_json():
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
     print("👨‍💻 Developed by Mark Calvo")
+    print("🌐 Render.com Compatible Version 2.4")
     init_database()
     print("✅ Database initialized")
     print("🌐 Server starting...")
     
     port = int(os.environ.get('PORT', 5000))
-    socketio.run(app, host='0.0.0.0', port=port, debug=False)
+    
+    # Use 0.0.0.0 for Render.com compatibility
+    socketio.run(app, 
+                host='0.0.0.0', 
+                port=port, 
+                debug=False,
+                allow_unsafe_werkzeug=True)
