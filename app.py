@@ -2856,27 +2856,10 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def get_db_connection():
-    """Get database connection - uses PostgreSQL on Render, SQLite locally"""
-    # Check if we're using PostgreSQL (Render.com)
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if database_url:
-        # Parse the database URL for PostgreSQL
-        parsed_url = urllib.parse.urlparse(database_url)
-        
-        conn = psycopg2.connect(
-            database=parsed_url.path[1:],
-            user=parsed_url.username,
-            password=parsed_url.password,
-            host=parsed_url.hostname,
-            port=parsed_url.port
-        )
-        return conn
-    else:
-        # Use SQLite for local development
-        conn = sqlite3.connect('nzxt_inventory.db')
-        conn.row_factory = sqlite3.Row
-        return conn
+    """Get database connection - uses SQLite (simpler for deployment)"""
+    conn = sqlite3.connect('nzxt_inventory.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_database():
     conn = get_db_connection()
