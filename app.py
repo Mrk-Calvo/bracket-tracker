@@ -1,4 +1,4 @@
-from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, send_file
 from flask_socketio import SocketIO
 import sqlite3
 from datetime import datetime, timezone, timedelta
@@ -11,7 +11,6 @@ import io
 import requests
 import csv
 import time
-from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, send_file
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
@@ -1075,7 +1074,7 @@ HTML_TEMPLATE = '''
             <h2 style="margin-bottom: 8px; font-size: 18px;">Printing Station - Add/Remove Printed Brackets</h2>
             <p style="margin-bottom: 15px; font-size: 13px;">Add quantities when brackets are printed. Remove for corrections.</p>
             
-            {% if session.role in ['admin', 'operator'] %}
+            {% if session.role in ['admin', 'operator', 'viewer'] %}
             <div class="bracket-list">
                 <div class="bracket-item header">
                     <div>Component</div>
@@ -1117,7 +1116,7 @@ HTML_TEMPLATE = '''
         <div id="picking" class="tab-content">
             <h2 style="margin-bottom: 8px; font-size: 18px;">Picking Station - Prepare Orders for Assembly</h2>
             
-            {% if session.role in ['admin', 'operator'] %}
+            {% if session.role in ['admin', 'operator', 'viewer'] %}
             <!-- Print Section -->
             <div class="print-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Print Picking List</h3>
@@ -1179,7 +1178,7 @@ HTML_TEMPLATE = '''
         <div id="assembly" class="tab-content">
             <h2 style="margin-bottom: 8px; font-size: 18px;">Assembly Line - Build and Complete Orders</h2>
             
-            {% if session.role in ['admin', 'operator'] %}
+            {% if session.role in ['admin', 'operator', 'viewer'] %}
             <!-- Orders Ready for Assembly -->
             <div class="assembly-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Orders Ready for Assembly</h3>
@@ -1200,7 +1199,7 @@ HTML_TEMPLATE = '''
         <div id="inventory" class="tab-content">
             <h2 style="margin-bottom: 8px; font-size: 18px;">Inventory Management</h2>
             
-            {% if session.role in ['admin', 'operator'] %}
+            {% if session.role in ['admin', 'operator', 'viewer'] %}
             <div class="export-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Export Data</h3>
                 <div class="export-buttons">
@@ -1294,7 +1293,7 @@ HTML_TEMPLATE = '''
             <h2 style="margin-bottom: 8px; font-size: 18px;">External Work Orders</h2>
             <p style="margin-bottom: 15px; font-size: 13px;">Work orders manually added or imported via CSV.</p>
             
-            {% if session.role in ['admin', 'operator'] %}
+            {% if session.role in ['admin', 'operator', 'viewer'] %}
             <div class="external-orders-section">
                 <!-- CSV Upload Section -->
                 <div class="upload-section">
@@ -1472,6 +1471,10 @@ HTML_TEMPLATE = '''
                     <div class="form-group">
                         <label>Backup Database</label>
                         <button class="btn-export" onclick="backupDatabase()">Download Backup</button>
+                    </div>
+                    <div class="form-group">
+                        <label>Clear Chat History</label>
+                        <button class="btn-remove" onclick="clearChatHistory()">Clear All Chat Messages</button>
                     </div>
                 </div>
             </div>
@@ -1814,6 +1817,7 @@ HTML_TEMPLATE = '''
             
             items.forEach(item => {
                 const stockClass = item.quantity <= 0 ? 'critical' : item.quantity <= item.min_stock ? 'low-stock' : '';
+                const isViewer = currentUserRole === 'viewer';
                 
                 if (stationType === 'printing') {
                     container.innerHTML += `
@@ -1821,11 +1825,13 @@ HTML_TEMPLATE = '''
                             <div class="bracket-name">${item.description || item.name}</div>
                             <div class="current-qty">${item.quantity}</div>
                             <div>
-                                <input type="number" class="qty-input" id="print-qty-${item.id}" value="0" min="0">
+                                <input type="number" class="qty-input" id="print-qty-${item.id}" value="0" min="0" ${isViewer ? 'disabled' : ''}>
                             </div>
                             <div>
-                                <button class="btn-add" onclick="addPrintedBrackets(${item.id})">Add</button>
-                                <button class="btn-remove" onclick="removePrintedBrackets(${item.id})">Remove</button>
+                                ${!isViewer ? `
+                                    <button class="btn-add" onclick="addPrintedBrackets(${item.id})">Add</button>
+                                    <button class="btn-remove" onclick="removePrintedBrackets(${item.id})">Remove</button>
+                                ` : '<span style="color: #6c757d; font-size: 11px;">View Only</span>'}
                             </div>
                         </div>
                     `;
@@ -1835,11 +1841,13 @@ HTML_TEMPLATE = '''
                             <div class="bracket-name">${item.description || item.name}</div>
                             <div class="current-qty">${item.quantity}</div>
                             <div>
-                                <input type="number" class="qty-input" id="pick-qty-${item.id}" value="0" min="0">
+                                <input type="number" class="qty-input" id="pick-qty-${item.id}" value="0" min="0" ${isViewer ? 'disabled' : ''}>
                             </div>
                             <div>
-                                <button class="btn-remove" onclick="removeBrackets(${item.id})">Remove</button>
-                                <button class="btn-add" onclick="addReturn(${item.id})">Return</button>
+                                ${!isViewer ? `
+                                    <button class="btn-remove" onclick="removeBrackets(${item.id})">Remove</button>
+                                    <button class="btn-add" onclick="addReturn(${item.id})">Return</button>
+                                ` : '<span style="color: #6c757d; font-size: 11px;">View Only</span>'}
                             </div>
                         </div>
                     `;
@@ -1849,10 +1857,12 @@ HTML_TEMPLATE = '''
                             <div class="bracket-name">${item.description || item.name}</div>
                             <div class="current-qty">${item.quantity}</div>
                             <div>
-                                <input type="number" class="qty-input" id="actual-qty-${item.id}" value="${item.quantity}" min="0">
+                                <input type="number" class="qty-input" id="actual-qty-${item.id}" value="${item.quantity}" min="0" ${isViewer ? 'disabled' : ''}>
                             </div>
                             <div>
-                                <button class="btn" onclick="updateActualCount(${item.id})">Update</button>
+                                ${!isViewer ? `
+                                    <button class="btn" onclick="updateActualCount(${item.id})">Update</button>
+                                ` : '<span style="color: #6c757d; font-size: 11px;">View Only</span>'}
                             </div>
                         </div>
                     `;
@@ -1916,16 +1926,21 @@ HTML_TEMPLATE = '''
                             }
                         });
                         
+                        const isViewer = currentUserRole === 'viewer';
+                        
                         categoryDiv.innerHTML += `
                             <div class="work-order-item">
                                 <div class="work-order-header">
                                     <div class="work-order-title">${workOrder.order_number} - ${workOrder.required_sets} sets ${workOrder.include_spacer ? '(with spacer)' : ''}</div>
                                     <div class="work-order-actions">
-                                        ${canMoveToAssembly ? 
+                                        ${canMoveToAssembly && !isViewer ? 
                                             `<button class="btn-move" onclick="moveToAssembly(${workOrder.id})">Move to Assembly</button>` : 
                                             ''
                                         }
-                                        <button class="btn-delete" onclick="deleteWorkOrder(${workOrder.id})">Delete</button>
+                                        ${!isViewer ? 
+                                            `<button class="btn-delete" onclick="deleteWorkOrder(${workOrder.id})">Delete</button>` : 
+                                            ''
+                                        }
                                     </div>
                                 </div>
                                 <div class="component-list">
@@ -1977,6 +1992,7 @@ HTML_TEMPLATE = '''
                 if (!workOrder) return;
                 
                 const components = getComponentsForSet(workOrder.set_type, workOrder.include_spacer);
+                const isViewer = currentUserRole === 'viewer';
                 
                 container.innerHTML += `
                     <div class="work-order-item assembly-ready">
@@ -1986,7 +2002,9 @@ HTML_TEMPLATE = '''
                                 <span class="assembly-status status-ready">READY</span>
                             </div>
                             <div class="work-order-actions">
-                                <button class="btn-complete" onclick="completeAssembly(${order.id})">Complete</button>
+                                ${!isViewer ? `
+                                    <button class="btn-complete" onclick="completeAssembly(${order.id})">Complete</button>
+                                ` : ''}
                             </div>
                         </div>
                         <div class="component-list">
@@ -2438,15 +2456,18 @@ HTML_TEMPLATE = '''
             
             orders.forEach(order => {
                 const requiredBrackets = Array.isArray(order.required_brackets) ? order.required_brackets : JSON.parse(order.required_brackets || '[]');
+                const isViewer = currentUserRole === 'viewer';
                 
                 container.innerHTML += `
                     <div class="external-order-item">
                         <div class="work-order-header">
                             <div class="work-order-title">${order.external_order_number}</div>
                             <div class="work-order-actions">
-                                <button class="btn-convert" onclick="convertExternalOrder(${order.id})">Convert to Work Order</button>
-                                <button class="btn-complete" onclick="completeExternalOrder(${order.id})">Complete</button>
-                                <button class="btn-delete" onclick="deleteExternalOrder(${order.id})">Delete</button>
+                                ${!isViewer ? `
+                                    <button class="btn-convert" onclick="convertExternalOrder(${order.id})">Convert to Work Order</button>
+                                    <button class="btn-complete" onclick="completeExternalOrder(${order.id})">Complete</button>
+                                    <button class="btn-delete" onclick="deleteExternalOrder(${order.id})">Delete</button>
+                                ` : ''}
                             </div>
                         </div>
                         <div class="external-order-info">
@@ -2771,7 +2792,7 @@ HTML_TEMPLATE = '''
             .then(data => {
                 if (data.success) {
                     alert('Slack webhook updated successfully!');
-                } else {
+                    } else {
                     alert('Error: ' + data.error);
                 }
             });
@@ -2791,9 +2812,34 @@ HTML_TEMPLATE = '''
             });
         }
         
+        function clearChatHistory() {
+            if (!confirm('Are you sure you want to clear all chat messages? This action cannot be undone.')) {
+                return;
+            }
+            
+            fetch('/api/clear_chat_history', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Chat history cleared successfully!');
+                    loadChatMessages();
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
+        }
+        
         // Load history when page loads
         window.onload = function() {
             if (currentUserRole !== 'viewer') {
+                loadHistory();
+                loadExternalOrders();
+                loadAssemblyOrders();
+                loadChatMessages();
+            } else {
+                // Viewer can still see these, just not edit
                 loadHistory();
                 loadExternalOrders();
                 loadAssemblyOrders();
@@ -3949,6 +3995,42 @@ def send_chat_message():
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/api/clear_chat_history', methods=['POST'])
+@login_required
+@role_required('admin')
+def clear_chat_history():
+    """Clear all chat messages"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute('DELETE FROM chat_messages')
+            # Add a new welcome message
+            conn.execute('INSERT INTO chat_messages (sender, message) VALUES (%s, %s)', 
+                        ('System', 'Chat history has been cleared. Start a new conversation!'))
+        else:
+            conn.execute('DELETE FROM chat_messages')
+            # Add a new welcome message
+            conn.execute('INSERT INTO chat_messages (sender, message) VALUES (?, ?)', 
+                        ('System', 'Chat history has been cleared. Start a new conversation!'))
+        
+        conn.commit()
+        conn.close()
+        
+        # Broadcast to all clients
+        socketio.emit('chat_message', {
+            'sender': 'System',
+            'message': 'Chat history has been cleared. Start a new conversation!',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        return jsonify({'success': True, 'message': 'Chat history cleared successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
 # Work Order Analysis Route
 @app.route('/api/work_order_analysis', methods=['POST'])
 @login_required
@@ -4898,4 +4980,3 @@ if __name__ == '__main__':
                 port=port, 
                 debug=False,
                 allow_unsafe_werkzeug=True)
-
