@@ -11,10 +11,7 @@ import io
 import requests
 import csv
 import time
-import psycopg2
-from psycopg2.extras import RealDictCursor
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for, send_file
-import urllib.parse
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
@@ -4901,3 +4898,4 @@ if __name__ == '__main__':
                 port=port, 
                 debug=False,
                 allow_unsafe_werkzeug=True)
+
