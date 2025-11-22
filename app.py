@@ -1,7 +1,7 @@
 from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import hashlib
 import secrets
@@ -11,7 +11,9 @@ import io
 import requests
 import csv
 import time
-import pytz
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import urllib.parse
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'bracket-tracker-2024-secure-key')
@@ -749,28 +751,221 @@ HTML_TEMPLATE = '''
             page-break-after: avoid;
         }
         
-        @media print {
-            body * {
-                visibility: hidden;
-            }
-            .printable-order, .printable-order * {
-                visibility: visible;
-            }
-            .printable-order {
-                position: relative;
-                left: 0;
-                top: 0;
-                width: 100%;
-                box-shadow: none;
-                border: none;
-                page-break-inside: avoid;
-            }
-            .print-all-container {
-                page-break-inside: avoid;
-            }
-            .no-print {
-                display: none !important;
-            }
+        /* Chat System Styles */
+        .chat-container {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 350px;
+            height: 500px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 5px 25px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+            border: 1px solid #ddd;
+        }
+        
+        .chat-header {
+            background: var(--primary);
+            color: white;
+            padding: 12px 15px;
+            border-radius: 10px 10px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: move;
+        }
+        
+        .chat-title {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .chat-controls {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .chat-btn {
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 4px;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: #f8f9fa;
+        }
+        
+        .chat-message {
+            max-width: 85%;
+            padding: 8px 12px;
+            border-radius: 15px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        
+        .message-sent {
+            align-self: flex-end;
+            background: var(--primary);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+        
+        .message-received {
+            align-self: flex-start;
+            background: white;
+            color: #333;
+            border: 1px solid #ddd;
+            border-bottom-left-radius: 5px;
+        }
+        
+        .message-system {
+            align-self: center;
+            background: #fff3cd;
+            color: #856404;
+            font-style: italic;
+            font-size: 11px;
+            max-width: 95%;
+        }
+        
+        .message-sender {
+            font-weight: bold;
+            font-size: 10px;
+            margin-bottom: 2px;
+            opacity: 0.8;
+        }
+        
+        .message-time {
+            font-size: 9px;
+            opacity: 0.7;
+            margin-top: 3px;
+            text-align: right;
+        }
+        
+        .chat-input-area {
+            padding: 12px;
+            border-top: 1px solid #ddd;
+            background: white;
+            border-radius: 0 0 10px 10px;
+        }
+        
+        .chat-input-row {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .chat-input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            font-size: 12px;
+            outline: none;
+        }
+        
+        .chat-input:focus {
+            border-color: var(--primary);
+        }
+        
+        .chat-send-btn {
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 35px;
+            height: 35px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .chat-minimized {
+            height: 40px;
+        }
+        
+        .chat-minimized .chat-messages,
+        .chat-minimized .chat-input-area {
+            display: none;
+        }
+        
+        .notification-badge {
+            background: var(--danger);
+            color: white;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: absolute;
+            top: -5px;
+            right: -5px;
+        }
+        
+        .chat-tab-btn {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 3px 15px rgba(0,0,0,0.2);
+            z-index: 999;
+        }
+        
+        .chat-tab-btn:hover {
+            background: #0056b3;
+        }
+        
+        .chat-hidden {
+            display: none;
+        }
+        
+        .system-alert {
+            background: #fff3cd;
+            border: 1px solid var(--warning);
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            font-size: 12px;
+        }
+        
+        .system-alert.success {
+            background: #d4edda;
+            border-color: var(--success);
+            color: #155724;
+        }
+        
+        .system-alert.error {
+            background: #f8d7da;
+            border-color: var(--danger);
+            color: #721c24;
+        }
+        
+        .system-alert.info {
+            background: #cce7ff;
+            border-color: var(--info);
+            color: #004085;
         }
         
         @media (max-width: 768px) {
@@ -800,6 +995,34 @@ HTML_TEMPLATE = '''
             .work-order-actions, .assembly-actions {
                 flex-direction: column;
             }
+            .chat-container {
+                width: 300px;
+                height: 400px;
+            }
+        }
+        
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            .printable-order, .printable-order * {
+                visibility: visible;
+            }
+            .printable-order {
+                position: relative;
+                left: 0;
+                top: 0;
+                width: 100%;
+                box-shadow: none;
+                border: none;
+                page-break-inside: avoid;
+            }
+            .print-all-container {
+                page-break-inside: avoid;
+            }
+            .no-print {
+                display: none !important;
+            }
         }
     </style>
 </head>
@@ -823,10 +1046,6 @@ HTML_TEMPLATE = '''
                     <div class="status-item">
                         <div class="status-label">STATUS</div>
                         <div class="status-value status-connected" id="status">CONNECTED</div>
-                    </div>
-                    <div class="status-item">
-                        <div class="status-label">LAST UPDATE</div>
-                        <div class="status-value" id="lastUpdate">--:--:-- --</div>
                     </div>
                     <div class="status-item">
                         <div class="status-label">PST TIME</div>
@@ -915,7 +1134,7 @@ HTML_TEMPLATE = '''
             <!-- Work Orders Section -->
             <div class="work-order-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Ready for Assembly</h3>
-                <p style="margin-bottom: 10px; font-size: 13px;">Orders automatically move to Assembly Line when components are available.</p>
+                <p style="margin-bottom: 10px; font-size: 13px;">Orders with all components available can be moved to Assembly Line.</p>
                 <div id="work-order-list">
                     <!-- Work orders will be loaded here -->
                 </div>
@@ -966,7 +1185,7 @@ HTML_TEMPLATE = '''
             <!-- Orders Ready for Assembly -->
             <div class="assembly-section">
                 <h3 style="margin: 0 0 10px 0; font-size: 16px;">Orders Ready for Assembly</h3>
-                <p style="margin-bottom: 10px; font-size: 13px;">Orders automatically moved from Picking Station when components are available.</p>
+                <p style="margin-bottom: 10px; font-size: 13px;">Orders moved from Picking Station for assembly.</p>
                 <div id="assembly-ready-list">
                     <!-- Ready orders will be loaded here -->
                 </div>
@@ -989,6 +1208,7 @@ HTML_TEMPLATE = '''
                 <div class="export-buttons">
                     <button class="btn btn-export" onclick="exportToCSV()">Export to CSV</button>
                     <button class="btn btn-export" onclick="exportInventoryJSON()">Export JSON (API)</button>
+                    <button class="btn btn-export" onclick="generateWorkOrderAnalysis()">Work Order Analysis</button>
                 </div>
             </div>
             
@@ -1237,6 +1457,26 @@ HTML_TEMPLATE = '''
                     </div>
                 </div>
             </div>
+            
+            <div class="admin-section">
+                <h3 style="margin: 0 0 10px 0; font-size: 16px;">Database Management</h3>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Database Status</label>
+                        <div style="padding: 8px; background: #f8f9fa; border-radius: 3px;">
+                            {% if using_postgres %}
+                            <span style="color: var(--success);">✅ Connected to PostgreSQL</span>
+                            {% else %}
+                            <span style="color: var(--warning);">⚠️ Using SQLite (ephemeral)</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Backup Database</label>
+                        <button class="btn-export" onclick="backupDatabase()">Download Backup</button>
+                    </div>
+                </div>
+            </div>
         </div>
         {% endif %}
         
@@ -1244,8 +1484,40 @@ HTML_TEMPLATE = '''
         <div class="developer-credit">
             Developed by <strong>Mark Calvo</strong> | 
             <a href="mailto:mark.calvo@premioinc.com">Contact</a> | 
-            Version 1.0 | 
+            Version 2.5 | 
             
+        </div>
+    </div>
+    
+    <!-- Floating Chat Widget -->
+    <button class="chat-tab-btn" id="chatToggleBtn" onclick="toggleChatWindow()">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="notification-badge" id="chatNotificationBadge" style="display: none;">0</span>
+    </button>
+    
+    <div class="chat-container chat-hidden" id="chatWindow">
+        <div class="chat-header" id="chatHeader">
+            <div class="chat-title">Team Chat</div>
+            <div class="chat-controls">
+                <button class="chat-btn" onclick="toggleChatMinimize()">−</button>
+                <button class="chat-btn" onclick="toggleChatWindow()">×</button>
+            </div>
+        </div>
+        <div class="chat-messages" id="chatMessages">
+            <!-- Chat messages will be loaded here -->
+        </div>
+        <div class="chat-input-area">
+            <div class="chat-input-row">
+                <input type="text" class="chat-input" id="chatInput" placeholder="Type your message..." onkeypress="handleChatInputKeypress(event)">
+                <button class="chat-send-btn" onclick="sendChatMessage()">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22,2 15,22 11,13 2,9"></polygon>
+                    </svg>
+                </button>
+            </div>
         </div>
     </div>
     {% endif %}
@@ -1256,6 +1528,9 @@ HTML_TEMPLATE = '''
         let workOrders = [];
         let assemblyOrders = [];
         let currentUserRole = '{{ session.role }}' || 'viewer';
+        let unreadMessages = 0;
+        let chatWindowVisible = false;
+        let chatMinimized = false;
         
         // Real-time clock function
         function updateClock() {
@@ -1299,9 +1574,148 @@ HTML_TEMPLATE = '''
                 loadAssemblyOrders();
             } else if (tabName === 'admin' && currentUserRole === 'admin') {
                 loadUsers();
-                loadApiSettings();
                 loadCompanySettings();
             }
+        }
+        
+        // Chat System Functions
+        function toggleChatWindow() {
+            const chatWindow = document.getElementById('chatWindow');
+            const chatBtn = document.getElementById('chatToggleBtn');
+            
+            if (chatWindowVisible) {
+                chatWindow.classList.add('chat-hidden');
+                chatBtn.style.display = 'flex';
+            } else {
+                chatWindow.classList.remove('chat-hidden');
+                chatBtn.style.display = 'none';
+                resetUnreadCount();
+                loadChatMessages();
+            }
+            
+            chatWindowVisible = !chatWindowVisible;
+        }
+        
+        function toggleChatMinimize() {
+            const chatWindow = document.getElementById('chatWindow');
+            chatMinimized = !chatMinimized;
+            
+            if (chatMinimized) {
+                chatWindow.classList.add('chat-minimized');
+            } else {
+                chatWindow.classList.remove('chat-minimized');
+            }
+        }
+        
+        function resetUnreadCount() {
+            unreadMessages = 0;
+            const badge = document.getElementById('chatNotificationBadge');
+            badge.style.display = 'none';
+            badge.textContent = '0';
+        }
+        
+        function incrementUnreadCount() {
+            if (!chatWindowVisible) {
+                unreadMessages++;
+                const badge = document.getElementById('chatNotificationBadge');
+                badge.style.display = 'flex';
+                badge.textContent = unreadMessages > 9 ? '9+' : unreadMessages.toString();
+            }
+        }
+        
+        function loadChatMessages() {
+            fetch('/api/chat_messages')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        updateChatDisplay(data.messages, 'chatMessages');
+                    }
+                });
+        }
+        
+        function updateChatDisplay(messages, containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = '';
+            
+            if (messages.length === 0) {
+                container.innerHTML = '<div class="chat-message message-system">No messages yet. Start the conversation!</div>';
+                return;
+            }
+            
+            messages.forEach(message => {
+                const messageTime = new Date(message.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                let messageClass = 'message-received';
+                
+                if (message.sender === 'System') {
+                    messageClass = 'message-system';
+                } else if (message.sender === '{{ session.username }}') {
+                    messageClass = 'message-sent';
+                }
+                
+                container.innerHTML += `
+                    <div class="chat-message ${messageClass}">
+                        ${message.sender !== 'System' && message.sender !== '{{ session.username }}' ? 
+                            `<div class="message-sender">${message.sender}</div>` : ''}
+                        <div>${message.message}</div>
+                        <div class="message-time">${messageTime}</div>
+                    </div>
+                `;
+            });
+            
+            // Scroll to bottom
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function sendChatMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            
+            if (message) {
+                socket.emit('chat_message', {
+                    message: message,
+                    sender: '{{ session.username }}'
+                });
+                
+                input.value = '';
+            }
+        }
+        
+        function handleChatInputKeypress(event) {
+            if (event.key === 'Enter') {
+                sendChatMessage();
+            }
+        }
+        
+        // Socket events for chat
+        socket.on('chat_message', (data) => {
+            incrementUnreadCount();
+            loadChatMessages(); // Reload messages to ensure consistency
+        });
+        
+        socket.on('system_notification', (data) => {
+            // Show system notification
+            showSystemAlert(data.message, data.type || 'info');
+            
+            // Send to chat as system message
+            socket.emit('system_chat_message', {
+                message: data.message
+            });
+        });
+        
+        function showSystemAlert(message, type = 'info') {
+            // Create alert element
+            const alert = document.createElement('div');
+            alert.className = `system-alert ${type}`;
+            alert.innerHTML = message;
+            
+            // Add to top of container
+            const container = document.querySelector('.container');
+            container.insertBefore(alert, container.firstChild);
+            
+            // Remove after 5 seconds
+            setTimeout(() => {
+                alert.remove();
+            }, 5000);
         }
         
         // Toggle spacer option for H9 sets
@@ -1366,7 +1780,6 @@ HTML_TEMPLATE = '''
             updateWorkOrderDisplay();
             updateAssemblyDisplay();
             updateSetAnalysis();
-            document.getElementById('lastUpdate').textContent = data.timestamp;
         });
         
         // Update inventory displays on all tabs
@@ -1449,7 +1862,7 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // Update work order display - automatically move to assembly when ready
+        // Update work order display - manual move to assembly
         function updateWorkOrderDisplay() {
             const container = document.getElementById('work-order-list');
             container.innerHTML = '';
@@ -1505,17 +1918,15 @@ HTML_TEMPLATE = '''
                             }
                         });
                         
-                        // Automatically move to assembly if ready
-                        if (canMoveToAssembly) {
-                            moveToAssembly(workOrder.id);
-                            return; // Skip displaying this order as it's being moved
-                        }
-                        
                         categoryDiv.innerHTML += `
                             <div class="work-order-item">
                                 <div class="work-order-header">
                                     <div class="work-order-title">${workOrder.order_number} - ${workOrder.required_sets} sets ${workOrder.include_spacer ? '(with spacer)' : ''}</div>
                                     <div class="work-order-actions">
+                                        ${canMoveToAssembly ? 
+                                            `<button class="btn-move" onclick="moveToAssembly(${workOrder.id})">Move to Assembly</button>` : 
+                                            ''
+                                        }
                                         <button class="btn-delete" onclick="deleteWorkOrder(${workOrder.id})">Delete</button>
                                     </div>
                                 </div>
@@ -1842,6 +2253,10 @@ HTML_TEMPLATE = '''
         }
         
         function moveToAssembly(workOrderId) {
+            if (!confirm('Move this work order to Assembly Line? This will deduct components from inventory.')) {
+                return;
+            }
+            
             fetch('/api/move_to_assembly', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1852,10 +2267,10 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    console.log('Work order moved to Assembly Line automatically');
+                    alert('Work order moved to Assembly Line! Components deducted from inventory.');
                     socket.emit('get_inventory');
                 } else {
-                    console.log('Error moving to assembly: ' + data.error);
+                    alert('Error: ' + data.error);
                 }
             });
         }
@@ -1894,7 +2309,7 @@ HTML_TEMPLATE = '''
         }
         
         function completeAssembly(assemblyOrderId) {
-            if (!confirm('Mark this assembly as complete? This will deduct components from inventory.')) {
+            if (!confirm('Mark this assembly as complete?')) {
                 return;
             }
             
@@ -1908,7 +2323,7 @@ HTML_TEMPLATE = '''
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert('Assembly completed successfully! Components deducted from inventory.');
+                    alert('Assembly completed successfully!');
                     socket.emit('get_inventory');
                 } else {
                     alert('Error: ' + data.error);
@@ -1953,6 +2368,24 @@ HTML_TEMPLATE = '''
         
         function exportInventoryJSON() {
             window.open('/api/inventory_json', '_blank');
+        }
+        
+        function backupDatabase() {
+            window.open('/api/backup_database', '_blank');
+        }
+        
+        function generateWorkOrderAnalysis() {
+            fetch('/api/work_order_analysis', {
+                method: 'POST'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert('Work order analysis sent to Slack!');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            });
         }
         
         // External Orders Functions
@@ -2100,6 +2533,7 @@ HTML_TEMPLATE = '''
                 if (data.success) {
                     alert('External work order deleted successfully!');
                     loadExternalOrders();
+                    socket.emit('get_inventory');
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -2289,6 +2723,9 @@ HTML_TEMPLATE = '''
                     if (data.success) {
                         document.getElementById('skuMapping').value = JSON.stringify(data.sku_mapping || {}, null, 2);
                         document.getElementById('skuSetMapping').value = JSON.stringify(data.sku_set_mapping || {}, null, 2);
+                        document.getElementById('lowStockThreshold').value = data.low_stock_threshold || 5;
+                        document.getElementById('criticalStockThreshold').value = data.critical_stock_threshold || 2;
+                        document.getElementById('slackWebhook').value = data.slack_webhook_url || '';
                     }
                 });
         }
@@ -2362,8 +2799,52 @@ HTML_TEMPLATE = '''
                 loadHistory();
                 loadExternalOrders();
                 loadAssemblyOrders();
+                loadChatMessages();
             }
+            
+            // Make chat window draggable
+            makeChatDraggable();
         };
+        
+        // Make chat window draggable
+        function makeChatDraggable() {
+            const chatHeader = document.getElementById('chatHeader');
+            const chatWindow = document.getElementById('chatWindow');
+            
+            let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+            
+            chatHeader.onmousedown = dragMouseDown;
+            
+            function dragMouseDown(e) {
+                e = e || window.event;
+                e.preventDefault();
+                // get the mouse cursor position at startup:
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                document.onmouseup = closeDragElement;
+                // call a function whenever the cursor moves:
+                document.onmousemove = elementDrag;
+            }
+            
+            function elementDrag(e) {
+                e = e || window.event;
+                e.preventDefault();
+                // calculate the new cursor position:
+                pos1 = pos3 - e.clientX;
+                pos2 = pos4 - e.clientY;
+                pos3 = e.clientX;
+                pos4 = e.clientY;
+                // set the element's new position:
+                chatWindow.style.top = (chatWindow.offsetTop - pos2) + "px";
+                chatWindow.style.left = (chatWindow.offsetLeft - pos1) + "px";
+            }
+            
+            function closeDragElement() {
+                // stop moving when mouse button is released:
+                document.onmouseup = null;
+                document.onmousemove = null;
+            }
+        }
     </script>
 </body>
 </html>
@@ -2373,86 +2854,209 @@ def hash_password(password):
     """Hash a password for storing."""
     return hashlib.sha256(password.encode()).hexdigest()
 
+def get_db_connection():
+    """Get database connection - uses PostgreSQL on Render, SQLite locally"""
+    # Check if we're using PostgreSQL (Render.com)
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if database_url:
+        # Parse the database URL for PostgreSQL
+        parsed_url = urllib.parse.urlparse(database_url)
+        
+        conn = psycopg2.connect(
+            database=parsed_url.path[1:],
+            user=parsed_url.username,
+            password=parsed_url.password,
+            host=parsed_url.hostname,
+            port=parsed_url.port
+        )
+        return conn
+    else:
+        # Use SQLite for local development
+        conn = sqlite3.connect('nzxt_inventory.db')
+        conn.row_factory = sqlite3.Row
+        return conn
+
 def init_database():
-    conn = sqlite3.connect('nzxt_inventory.db')
-    c = conn.cursor()
+    conn = get_db_connection()
     
-    # Drop and recreate all tables to ensure clean schema
-    c.execute("DROP TABLE IF EXISTS items")
-    c.execute("DROP TABLE IF EXISTS transactions")
-    c.execute("DROP TABLE IF EXISTS work_orders")
-    c.execute("DROP TABLE IF EXISTS users")
-    c.execute("DROP TABLE IF EXISTS settings")
-    c.execute("DROP TABLE IF EXISTS external_work_orders")
-    c.execute("DROP TABLE IF EXISTS assembly_orders")
+    # Check if we're using PostgreSQL
+    is_postgres = 'postgresql' in str(conn)
     
-    # Create items table
-    c.execute('''CREATE TABLE items
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  name TEXT NOT NULL UNIQUE,
-                  description TEXT,
-                  case_type TEXT,
-                  quantity INTEGER DEFAULT 0,
-                  min_stock INTEGER DEFAULT 5,
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Create transactions table with username field
-    c.execute('''CREATE TABLE transactions
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  item_id INTEGER,
-                  change INTEGER,
-                  station TEXT,
-                  notes TEXT,
-                  username TEXT,
-                  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                  FOREIGN KEY (item_id) REFERENCES items (id))''')
-    
-    # Create work_orders table with updated schema
-    c.execute('''CREATE TABLE work_orders
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  order_number TEXT NOT NULL,
-                  set_type TEXT NOT NULL,
-                  required_sets INTEGER NOT NULL,
-                  include_spacer BOOLEAN DEFAULT 0,
-                  status TEXT DEFAULT 'active',
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Create external_work_orders table for scraped orders
-    c.execute('''CREATE TABLE external_work_orders
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  external_order_number TEXT NOT NULL UNIQUE,
-                  sku TEXT NOT NULL,
-                  quantity INTEGER NOT NULL,
-                  required_brackets TEXT NOT NULL,
-                  status TEXT DEFAULT 'active',
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                  last_synced DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Create assembly_orders table for assembly line
-    c.execute('''CREATE TABLE assembly_orders
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  work_order_id INTEGER NOT NULL,
-                  status TEXT DEFAULT 'ready',  -- ready, building, completed, cancelled
-                  moved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                  started_at DATETIME,
-                  completed_at DATETIME,
-                  assembled_by TEXT,
-                  notes TEXT,
-                  FOREIGN KEY (work_order_id) REFERENCES work_orders (id))''')
-    
-    # Create users table
-    c.execute('''CREATE TABLE users
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  username TEXT NOT NULL UNIQUE,
-                  password_hash TEXT NOT NULL,
-                  role TEXT NOT NULL DEFAULT 'viewer',
-                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
-    
-    # Create settings table
-    c.execute('''CREATE TABLE settings
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  key TEXT NOT NULL UNIQUE,
-                  value TEXT NOT NULL)''')
+    if is_postgres:
+        print("🔗 Using PostgreSQL database")
+        c = conn.cursor()
+        
+        # Enable UUID extension if needed
+        c.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+        
+        # Create tables with PostgreSQL syntax
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS items
+            (id SERIAL PRIMARY KEY,
+             name TEXT NOT NULL UNIQUE,
+             description TEXT,
+             case_type TEXT,
+             quantity INTEGER DEFAULT 0,
+             min_stock INTEGER DEFAULT 5,
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS transactions
+            (id SERIAL PRIMARY KEY,
+             item_id INTEGER,
+             change INTEGER,
+             station TEXT,
+             notes TEXT,
+             username TEXT,
+             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS work_orders
+            (id SERIAL PRIMARY KEY,
+             order_number TEXT NOT NULL,
+             set_type TEXT NOT NULL,
+             required_sets INTEGER NOT NULL,
+             include_spacer BOOLEAN DEFAULT FALSE,
+             status TEXT DEFAULT 'active',
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS external_work_orders
+            (id SERIAL PRIMARY KEY,
+             external_order_number TEXT NOT NULL UNIQUE,
+             sku TEXT NOT NULL,
+             quantity INTEGER NOT NULL,
+             required_brackets TEXT NOT NULL,
+             status TEXT DEFAULT 'active',
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+             last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS assembly_orders
+            (id SERIAL PRIMARY KEY,
+             work_order_id INTEGER NOT NULL,
+             status TEXT DEFAULT 'ready',
+             moved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+             started_at TIMESTAMP,
+             completed_at TIMESTAMP,
+             assembled_by TEXT,
+             notes TEXT)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users
+            (id SERIAL PRIMARY KEY,
+             username TEXT NOT NULL UNIQUE,
+             password_hash TEXT NOT NULL,
+             role TEXT NOT NULL DEFAULT 'viewer',
+             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS settings
+            (id SERIAL PRIMARY KEY,
+             key TEXT NOT NULL UNIQUE,
+             value TEXT NOT NULL)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS chat_messages
+            (id SERIAL PRIMARY KEY,
+             sender TEXT NOT NULL,
+             message TEXT NOT NULL,
+             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+    else:
+        print("🔗 Using SQLite database")
+        c = conn.cursor()
+        
+        # Create tables with SQLite syntax
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS items
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL UNIQUE,
+             description TEXT,
+             case_type TEXT,
+             quantity INTEGER DEFAULT 0,
+             min_stock INTEGER DEFAULT 5,
+             created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS transactions
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             item_id INTEGER,
+             change INTEGER,
+             station TEXT,
+             notes TEXT,
+             username TEXT,
+             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS work_orders
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             order_number TEXT NOT NULL,
+             set_type TEXT NOT NULL,
+             required_sets INTEGER NOT NULL,
+             include_spacer BOOLEAN DEFAULT 0,
+             status TEXT DEFAULT 'active',
+             created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS external_work_orders
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             external_order_number TEXT NOT NULL UNIQUE,
+             sku TEXT NOT NULL,
+             quantity INTEGER NOT NULL,
+             required_brackets TEXT NOT NULL,
+             status TEXT DEFAULT 'active',
+             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+             last_synced DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS assembly_orders
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             work_order_id INTEGER NOT NULL,
+             status TEXT DEFAULT 'ready',
+             moved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+             started_at DATETIME,
+             completed_at DATETIME,
+             assembled_by TEXT,
+             notes TEXT)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS users
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             username TEXT NOT NULL UNIQUE,
+             password_hash TEXT NOT NULL,
+             role TEXT NOT NULL DEFAULT 'viewer',
+             created_at DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS settings
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             key TEXT NOT NULL UNIQUE,
+             value TEXT NOT NULL)
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS chat_messages
+            (id INTEGER PRIMARY KEY AUTOINCREMENT,
+             sender TEXT NOT NULL,
+             message TEXT NOT NULL,
+             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)
+        ''')
     
     # Add initial brackets with updated names
     initial_items = [
@@ -2468,18 +3072,24 @@ def init_database():
     ]
     
     for item in initial_items:
-        c.execute('INSERT OR IGNORE INTO items (name, description, case_type, quantity, min_stock) VALUES (?, ?, ?, ?, ?)', item)
+        if is_postgres:
+            c.execute('INSERT INTO items (name, description, case_type, quantity, min_stock) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (name) DO NOTHING', item)
+        else:
+            c.execute('INSERT OR IGNORE INTO items (name, description, case_type, quantity, min_stock) VALUES (?, ?, ?, ?, ?)', item)
     
     # Add sample work orders
     sample_work_orders = [
-        ('WO-001', 'H6', 10, 0),
-        ('WO-002', 'H7-282', 5, 0),
-        ('WO-003', 'H7-304', 5, 0),
-        ('WO-004', 'H9', 8, 1)
+        ('WO-001', 'H6', 10, False),
+        ('WO-002', 'H7-282', 5, False),
+        ('WO-003', 'H7-304', 5, False),
+        ('WO-004', 'H9', 8, True)
     ]
     
     for wo in sample_work_orders:
-        c.execute('INSERT OR IGNORE INTO work_orders (order_number, set_type, required_sets, include_spacer) VALUES (?, ?, ?, ?)', wo)
+        if is_postgres:
+            c.execute('INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING', wo)
+        else:
+            c.execute('INSERT OR IGNORE INTO work_orders (order_number, set_type, required_sets, include_spacer) VALUES (?, ?, ?, ?)', wo)
     
     # Add default users
     default_users = [
@@ -2489,7 +3099,10 @@ def init_database():
     ]
     
     for user in default_users:
-        c.execute('INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)', user)
+        if is_postgres:
+            c.execute('INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) ON CONFLICT (username) DO NOTHING', user)
+        else:
+            c.execute('INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)', user)
     
     # Add default settings
     default_settings = [
@@ -2501,26 +3114,43 @@ def init_database():
     ]
     
     for setting in default_settings:
-        c.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', setting)
+        if is_postgres:
+            c.execute('INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', setting)
+        else:
+            c.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', setting)
+    
+    # Add welcome chat message
+    welcome_message = ('System', 'Welcome to the Bracket Inventory Tracker! Use this chat to communicate with your team.')
+    if is_postgres:
+        c.execute('INSERT INTO chat_messages (sender, message) VALUES (%s, %s)', welcome_message)
+    else:
+        c.execute('INSERT INTO chat_messages (sender, message) VALUES (?, ?)', welcome_message)
     
     conn.commit()
     conn.close()
-    print("✅ Database initialized successfully with clean schema")
-
-def get_db():
-    conn = sqlite3.connect('nzxt_inventory.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+    print("✅ Database initialized successfully")
 
 def get_setting(key, default=None):
-    conn = get_db()
-    setting = conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        setting = conn.execute('SELECT value FROM settings WHERE key = %s', (key,)).fetchone()
+    else:
+        setting = conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
+    
     conn.close()
     return setting['value'] if setting else default
 
 def update_setting(key, value):
-    conn = get_db()
-    conn.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        conn.execute('INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value', (key, value))
+    else:
+        conn.execute('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+    
     conn.commit()
     conn.close()
 
@@ -2541,11 +3171,12 @@ def get_sku_set_mapping():
         return SKU_SET_MAPPING
 
 def get_pst_time():
-    """Get current time in PST timezone"""
+    """Get current time in PST timezone without pytz dependency"""
     utc_now = datetime.now(timezone.utc)
-    pst_tz = pytz.timezone('US/Pacific')
-    pst_now = utc_now.astimezone(pst_tz)
-    return pst_now.strftime("%I:%M:%S %p").lstrip('0')
+    # PST is UTC-8 (no DST handling for simplicity)
+    pst_offset = timedelta(hours=-8)
+    pst_time = utc_now + pst_offset
+    return pst_time.strftime("%I:%M:%S %p").lstrip('0')
 
 def send_slack_notification(message):
     """Send notification to Slack with improved error handling"""
@@ -2592,9 +3223,122 @@ def send_slack_notification(message):
         print(f"❌ Slack notification failed: {e}")
         return False
 
+def send_work_order_analysis_notification():
+    """Send detailed analysis of what can and cannot be built"""
+    conn = get_db_connection()
+    
+    try:
+        # Get current inventory
+        items = conn.execute('SELECT * FROM items').fetchall()
+        current_inventory = [dict(item) for item in items]
+        
+        # Get active work orders
+        work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active'").fetchall()
+        work_orders_data = [dict(wo) for wo in work_orders]
+        
+        # Get assembly orders
+        assembly_orders = conn.execute("SELECT * FROM assembly_orders WHERE status = 'ready'").fetchall()
+        assembly_orders_data = [dict(ao) for ao in assembly_orders]
+        
+        # Analyze what can be built
+        buildable_orders = []
+        unbuildable_orders = []
+        in_assembly_orders = []
+        
+        # Add orders that are already in assembly
+        for assembly_order in assembly_orders_data:
+            work_order = next((wo for wo in work_orders_data if wo['id'] == assembly_order['work_order_id']), None)
+            if work_order:
+                in_assembly_orders.append(work_order)
+        
+        for work_order in work_orders_data:
+            # Skip if already in assembly
+            if work_order in in_assembly_orders:
+                continue
+                
+            components = get_components_for_set_type(work_order['set_type'], work_order.get('include_spacer', False))
+            can_build = True
+            missing_components = []
+            
+            for component in components:
+                item = next((item for item in current_inventory if item['name'] == component), None)
+                available = item['quantity'] if item else 0
+                required = work_order['required_sets']
+                
+                if available < required:
+                    can_build = False
+                    missing_components.append({
+                        'name': component,
+                        'required': required,
+                        'available': available,
+                        'missing': required - available
+                    })
+            
+            order_info = {
+                'order_number': work_order['order_number'],
+                'set_type': work_order['set_type'],
+                'required_sets': work_order['required_sets'],
+                'components': components
+            }
+            
+            if can_build:
+                buildable_orders.append(order_info)
+            else:
+                order_info['missing_components'] = missing_components
+                unbuildable_orders.append(order_info)
+        
+        # Build the notification message
+        message = "🏭 *WORK ORDER ANALYSIS*\n\n"
+        
+        if in_assembly_orders:
+            message += "🔧 *IN ASSEMBLY:*\n"
+            for order in in_assembly_orders:
+                message += f"• {order['order_number']} - {order['set_type']} ({order['required_sets']} sets)\n"
+            message += "\n"
+        
+        if buildable_orders:
+            message += "✅ *READY TO BUILD:*\n"
+            for order in buildable_orders:
+                message += f"• {order['order_number']} - {order['set_type']} ({order['required_sets']} sets)\n"
+            message += "\n"
+        
+        if unbuildable_orders:
+            message += "❌ *CANNOT BUILD (MISSING COMPONENTS):*\n"
+            for order in unbuildable_orders:
+                message += f"• {order['order_number']} - {order['set_type']} ({order['required_sets']} sets)\n"
+                for mc in order['missing_components']:
+                    message += f"  └─ {mc['name']}: {mc['available']}/{mc['required']} (need {mc['missing']} more)\n"
+            message += "\n"
+        
+        # Add set completion analysis
+        message += "📊 *SET COMPLETION ANALYSIS:*\n"
+        set_types = ['H6', 'H7-282', 'H7-304', 'H9']
+        
+        for set_type in set_types:
+            components = get_components_for_set_type(set_type, False)
+            component_qtys = []
+            
+            for component in components:
+                item = next((item for item in current_inventory if item['name'] == component), None)
+                component_qtys.append(item['quantity'] if item else 0)
+            
+            max_sets = min(component_qtys) if component_qtys else 0
+            message += f"• {set_type}: {max_sets} complete sets possible\n"
+        
+        message += f"\n_Generated at {get_pst_time()}_"
+        
+        return send_slack_notification(message)
+        
+    except Exception as e:
+        print(f"❌ Error generating work order analysis: {str(e)}")
+        return False
+    finally:
+        conn.close()
+
 def convert_external_to_work_order(external_order):
     """Convert an external work order to a regular work order"""
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
         # Get SKU to set type mapping
@@ -2604,25 +3348,42 @@ def convert_external_to_work_order(external_order):
         set_type = sku_set_mapping.get(external_order['sku'], 'H6')  # Default to H6 if not found
         
         # Check if work order already exists
-        existing = conn.execute(
-            'SELECT id FROM work_orders WHERE order_number = ?',
-            (external_order['external_order_number'],)
-        ).fetchone()
+        if is_postgres:
+            existing = conn.execute(
+                'SELECT id FROM work_orders WHERE order_number = %s',
+                (external_order['external_order_number'],)
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                'SELECT id FROM work_orders WHERE order_number = ?',
+                (external_order['external_order_number'],)
+            ).fetchone()
         
         if existing:
             print(f"⚠️ Work order {external_order['external_order_number']} already exists")
             return False
         
         # Create new work order
-        conn.execute('''
-            INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
-            VALUES (?, ?, ?, ?)
-        ''', (
-            external_order['external_order_number'],
-            set_type,
-            external_order['quantity'],
-            0  # Default to no spacer
-        ))
+        if is_postgres:
+            conn.execute('''
+                INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+                VALUES (%s, %s, %s, %s)
+            ''', (
+                external_order['external_order_number'],
+                set_type,
+                external_order['quantity'],
+                False  # Default to no spacer
+            ))
+        else:
+            conn.execute('''
+                INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+                VALUES (?, ?, ?, ?)
+            ''', (
+                external_order['external_order_number'],
+                set_type,
+                external_order['quantity'],
+                False  # Default to no spacer
+            ))
         
         print(f"✅ Converted external order {external_order['external_order_number']} to work order")
         
@@ -2631,10 +3392,16 @@ def convert_external_to_work_order(external_order):
         current_inventory = [dict(item) for item in items]
         
         # Get the created work order
-        work_order = conn.execute(
-            'SELECT * FROM work_orders WHERE order_number = ?', 
-            (external_order['external_order_number'],)
-        ).fetchone()
+        if is_postgres:
+            work_order = conn.execute(
+                'SELECT * FROM work_orders WHERE order_number = %s', 
+                (external_order['external_order_number'],)
+            ).fetchone()
+        else:
+            work_order = conn.execute(
+                'SELECT * FROM work_orders WHERE order_number = ?', 
+                (external_order['external_order_number'],)
+            ).fetchone()
         
         conn.commit()
         
@@ -2807,11 +3574,16 @@ def process_csv_upload(file_content):
 
 def check_bracket_availability(required_brackets, quantity):
     """Check if we have enough brackets for an order"""
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     missing_brackets = []
     
     for bracket in required_brackets:
-        item = conn.execute('SELECT * FROM items WHERE name = ?', (bracket,)).fetchone()
+        if is_postgres:
+            item = conn.execute('SELECT * FROM items WHERE name = %s', (bracket,)).fetchone()
+        else:
+            item = conn.execute('SELECT * FROM items WHERE name = ?', (bracket,)).fetchone()
+        
         if not item or item['quantity'] < quantity:
             missing_brackets.append({
                 'name': bracket,
@@ -2824,29 +3596,55 @@ def check_bracket_availability(required_brackets, quantity):
     return missing_brackets
 
 def broadcast_update():
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     items = conn.execute('SELECT * FROM items ORDER BY name').fetchall()
-    recent_activity = conn.execute('''
-        SELECT t.*, i.name as item_name 
-        FROM transactions t 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC 
-        LIMIT 10
-    ''').fetchall()
     
-    work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active' ORDER BY set_type, created_at").fetchall()
-    assembly_orders = conn.execute('''
-        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
-        FROM assembly_orders ao
-        JOIN work_orders wo ON ao.work_order_id = wo.id
-        ORDER BY 
-            CASE WHEN ao.status = 'ready' THEN 1
-                 WHEN ao.status = 'building' THEN 2
-                 WHEN ao.status = 'completed' THEN 3
-                 ELSE 4 END,
-            ao.moved_at DESC
-    ''').fetchall()
+    if is_postgres:
+        recent_activity = conn.execute('''
+            SELECT t.*, i.name as item_name 
+            FROM transactions t 
+            JOIN items i ON t.item_id = i.id 
+            ORDER BY t.timestamp DESC 
+            LIMIT 10
+        ''').fetchall()
+        
+        work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active' ORDER BY set_type, created_at").fetchall()
+        
+        assembly_orders = conn.execute('''
+            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+            FROM assembly_orders ao
+            JOIN work_orders wo ON ao.work_order_id = wo.id
+            ORDER BY 
+                CASE WHEN ao.status = 'ready' THEN 1
+                     WHEN ao.status = 'building' THEN 2
+                     WHEN ao.status = 'completed' THEN 3
+                     ELSE 4 END,
+                ao.moved_at DESC
+        ''').fetchall()
+    else:
+        recent_activity = conn.execute('''
+            SELECT t.*, i.name as item_name 
+            FROM transactions t 
+            JOIN items i ON t.item_id = i.id 
+            ORDER BY t.timestamp DESC 
+            LIMIT 10
+        ''').fetchall()
+        
+        work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active' ORDER BY set_type, created_at").fetchall()
+        
+        assembly_orders = conn.execute('''
+            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+            FROM assembly_orders ao
+            JOIN work_orders wo ON ao.work_order_id = wo.id
+            ORDER BY 
+                CASE WHEN ao.status = 'ready' THEN 1
+                     WHEN ao.status = 'building' THEN 2
+                     WHEN ao.status = 'completed' THEN 3
+                     ELSE 4 END,
+                ao.moved_at DESC
+        ''').fetchall()
     
     conn.close()
     
@@ -2855,15 +3653,11 @@ def broadcast_update():
     work_orders_data = [dict(wo) for wo in work_orders]
     assembly_orders_data = [dict(ao) for ao in assembly_orders]
     
-    # Use PST time for timestamp
-    timestamp_pst = get_pst_time()
-    
     socketio.emit('inventory_update', {
         'items': items_data,
         'recent_activity': activity_data,
         'work_orders': work_orders_data,
-        'assembly_orders': assembly_orders_data,
-        'timestamp': timestamp_pst
+        'assembly_orders': assembly_orders_data
     })
 
 # Authentication decorators
@@ -2911,9 +3705,14 @@ def handle_inventory_change(data):
             socketio.emit('error', {'message': 'Item ID is required'}, room=request.sid)
             return
         
-        conn = get_db()
+        conn = get_db_connection()
+        is_postgres = 'postgresql' in str(conn)
         
-        item = conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone()
+        if is_postgres:
+            item = conn.execute('SELECT * FROM items WHERE id = %s', (item_id,)).fetchone()
+        else:
+            item = conn.execute('SELECT * FROM items WHERE id = ?', (item_id,)).fetchone()
+        
         if not item:
             socketio.emit('error', {'message': 'Item not found'}, room=request.sid)
             return
@@ -2926,13 +3725,22 @@ def handle_inventory_change(data):
             }, room=request.sid)
             return
         
-        conn.execute('UPDATE items SET quantity = ? WHERE id = ?', (new_quantity, item_id))
-        
-        # Record transaction with username
-        conn.execute('''
-            INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (item_id, change, station, notes, session['username'], datetime.now()))
+        if is_postgres:
+            conn.execute('UPDATE items SET quantity = %s WHERE id = %s', (new_quantity, item_id))
+            
+            # Record transaction with username
+            conn.execute('''
+                INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (item_id, change, station, notes, session['username'], datetime.now()))
+        else:
+            conn.execute('UPDATE items SET quantity = ? WHERE id = ?', (new_quantity, item_id))
+            
+            # Record transaction with username
+            conn.execute('''
+                INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (item_id, change, station, notes, session['username'], datetime.now()))
         
         # Send Slack notification for inventory changes
         if station == 'Printing Station':
@@ -2962,16 +3770,101 @@ def handle_inventory_change(data):
         print(f"❌ Error: {str(e)}")
         socketio.emit('error', {'message': f'Error: {str(e)}'}, room=request.sid)
 
+@socketio.on('chat_message')
+@login_required
+def handle_chat_message(data):
+    """Handle chat messages from users"""
+    message = data.get('message', '').strip()
+    sender = data.get('sender', 'Unknown')
+    
+    if not message:
+        return
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                (sender, message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                (sender, message)
+            )
+        
+        conn.commit()
+        
+        # Broadcast the new message to all connected clients
+        socketio.emit('chat_message', {
+            'sender': sender,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        print(f"💬 Chat message from {sender}: {message}")
+        
+    except Exception as e:
+        print(f"❌ Error saving chat message: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+@socketio.on('system_chat_message')
+def handle_system_chat_message(data):
+    """Handle system messages for chat"""
+    message = data.get('message', '').strip()
+    
+    if not message:
+        return
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                ('System', message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                ('System', message)
+            )
+        
+        conn.commit()
+        
+        # Broadcast the system message to all connected clients
+        socketio.emit('chat_message', {
+            'sender': 'System',
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        print(f"🔔 System chat message: {message}")
+        
+    except Exception as e:
+        print(f"❌ Error saving system chat message: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 # Flask routes
 @app.route('/')
 def index():
     if 'user_id' not in session:
-        return render_template_string(HTML_TEMPLATE, slack_webhook=get_setting('slack_webhook_url', ''))
+        return render_template_string(HTML_TEMPLATE, 
+                                   slack_webhook=get_setting('slack_webhook_url', ''),
+                                   using_postgres='postgresql' in str(get_db_connection()))
     
     return render_template_string(HTML_TEMPLATE, 
                                 username=session['username'],
                                 role=session['role'],
-                                slack_webhook=get_setting('slack_webhook_url', ''))
+                                slack_webhook=get_setting('slack_webhook_url', ''),
+                                using_postgres='postgresql' in str(get_db_connection()))
 
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -2982,8 +3875,14 @@ def login():
     if not username or not password:
         return jsonify({'success': False, 'error': 'Username and password are required'})
     
-    conn = get_db()
-    user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        user = conn.execute('SELECT * FROM users WHERE username = %s', (username,)).fetchone()
+    else:
+        user = conn.execute('SELECT * FROM users WHERE username = ?', (username,)).fetchone()
+    
     conn.close()
     
     if user and user['password_hash'] == hash_password(password):
@@ -2999,23 +3898,188 @@ def logout():
     session.clear()
     return jsonify({'success': True, 'message': 'Logout successful'})
 
+# Chat API Routes
+@app.route('/api/chat_messages')
+@login_required
+def get_chat_messages():
+    """Get recent chat messages"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        messages = conn.execute('''
+            SELECT * FROM chat_messages 
+            ORDER BY timestamp DESC 
+            LIMIT 50
+        ''').fetchall()
+    else:
+        messages = conn.execute('''
+            SELECT * FROM chat_messages 
+            ORDER BY timestamp DESC 
+            LIMIT 50
+        ''').fetchall()
+    
+    conn.close()
+    
+    messages_data = [dict(msg) for msg in messages]
+    # Reverse to show oldest first
+    messages_data.reverse()
+    
+    return jsonify({'success': True, 'messages': messages_data})
+
+@app.route('/api/send_chat_message', methods=['POST'])
+@login_required
+def send_chat_message():
+    """Send a chat message"""
+    data = request.get_json()
+    message = data.get('message', '').strip()
+    
+    if not message:
+        return jsonify({'success': False, 'error': 'Message cannot be empty'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                (session['username'], message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                (session['username'], message)
+            )
+        
+        conn.commit()
+        conn.close()
+        
+        # Broadcast via SocketIO
+        socketio.emit('chat_message', {
+            'sender': session['username'],
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        return jsonify({'success': True, 'message': 'Message sent'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+# Work Order Analysis Route
+@app.route('/api/work_order_analysis', methods=['POST'])
+@login_required
+@role_required('operator')
+def work_order_analysis():
+    """Generate and send work order analysis to Slack"""
+    try:
+        if send_work_order_analysis_notification():
+            # Also send to chat
+            socketio.emit('system_chat_message', {
+                'message': 'Work order analysis has been sent to Slack. Check your Slack channel for details.'
+            })
+            
+            socketio.emit('system_notification', {
+                'message': 'Work order analysis sent to Slack successfully!',
+                'type': 'success'
+            })
+            
+            return jsonify({'success': True, 'message': 'Work order analysis sent to Slack'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to send analysis to Slack'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# Database Backup Route
+@app.route('/api/backup_database')
+@login_required
+@role_required('admin')
+def backup_database():
+    """Create a backup of the database"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        # For PostgreSQL, we can't easily create a downloadable backup
+        # Instead, provide a data export
+        return export_comprehensive_data()
+    else:
+        # For SQLite, we can provide the actual database file
+        return send_file('nzxt_inventory.db', as_attachment=True, download_name='inventory_backup.db')
+
+def export_comprehensive_data():
+    """Export all data as a comprehensive JSON file"""
+    conn = get_db_connection()
+    
+    # Get all data
+    items = conn.execute('SELECT * FROM items').fetchall()
+    transactions = conn.execute('SELECT * FROM transactions ORDER BY timestamp DESC').fetchall()
+    work_orders = conn.execute('SELECT * FROM work_orders').fetchall()
+    external_orders = conn.execute('SELECT * FROM external_work_orders').fetchall()
+    assembly_orders = conn.execute('SELECT * FROM assembly_orders').fetchall()
+    users = conn.execute('SELECT id, username, role, created_at FROM users').fetchall()
+    settings = conn.execute('SELECT * FROM settings').fetchall()
+    chat_messages = conn.execute('SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT 1000').fetchall()
+    
+    conn.close()
+    
+    # Convert to dictionaries
+    data = {
+        'export_timestamp': datetime.now().isoformat(),
+        'items': [dict(item) for item in items],
+        'transactions': [dict(t) for t in transactions],
+        'work_orders': [dict(wo) for wo in work_orders],
+        'external_orders': [dict(eo) for eo in external_orders],
+        'assembly_orders': [dict(ao) for ao in assembly_orders],
+        'users': [dict(user) for user in users],
+        'settings': [dict(setting) for setting in settings],
+        'chat_messages': [dict(msg) for msg in chat_messages]
+    }
+    
+    # Create JSON response
+    response = app.response_class(
+        json.dumps(data, indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment;filename=inventory_backup.json'}
+    )
+    
+    return response
+
 # Assembly Line API Routes
 @app.route('/api/assembly_orders')
 @login_required
 def get_assembly_orders():
     """Get all assembly orders"""
-    conn = get_db()
-    assembly_orders = conn.execute('''
-        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
-        FROM assembly_orders ao
-        JOIN work_orders wo ON ao.work_order_id = wo.id
-        ORDER BY 
-            CASE WHEN ao.status = 'ready' THEN 1
-                 WHEN ao.status = 'building' THEN 2
-                 WHEN ao.status = 'completed' THEN 3
-                 ELSE 4 END,
-            ao.moved_at DESC
-    ''').fetchall()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        assembly_orders = conn.execute('''
+            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+            FROM assembly_orders ao
+            JOIN work_orders wo ON ao.work_order_id = wo.id
+            ORDER BY 
+                CASE WHEN ao.status = 'ready' THEN 1
+                     WHEN ao.status = 'building' THEN 2
+                     WHEN ao.status = 'completed' THEN 3
+                     ELSE 4 END,
+                ao.moved_at DESC
+        ''').fetchall()
+    else:
+        assembly_orders = conn.execute('''
+            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer
+            FROM assembly_orders ao
+            JOIN work_orders wo ON ao.work_order_id = wo.id
+            ORDER BY 
+                CASE WHEN ao.status = 'ready' THEN 1
+                     WHEN ao.status = 'building' THEN 2
+                     WHEN ao.status = 'completed' THEN 3
+                     ELSE 4 END,
+                ao.moved_at DESC
+        ''').fetchall()
+    
     conn.close()
     
     assembly_orders_data = [dict(order) for order in assembly_orders]
@@ -3025,38 +4089,76 @@ def get_assembly_orders():
 @login_required
 @role_required('operator')
 def move_to_assembly():
-    """Move a work order to assembly line"""
+    """Move a work order to assembly line and deduct components"""
     data = request.get_json()
     work_order_id = data.get('work_order_id')
     
     if not work_order_id:
         return jsonify({'success': False, 'error': 'Work order ID is required'})
     
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
         # Check if work order exists and is active
-        work_order = conn.execute('SELECT * FROM work_orders WHERE id = ? AND status = "active"', (work_order_id,)).fetchone()
+        if is_postgres:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = %s AND status = %s', (work_order_id, 'active')).fetchone()
+        else:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = ? AND status = ?', (work_order_id, 'active')).fetchone()
+        
         if not work_order:
             return jsonify({'success': False, 'error': 'Active work order not found'})
         
         # Check if already in assembly
-        existing_assembly = conn.execute('SELECT id FROM assembly_orders WHERE work_order_id = ? AND status IN ("ready", "building")', (work_order_id,)).fetchone()
+        if is_postgres:
+            existing_assembly = conn.execute('SELECT id FROM assembly_orders WHERE work_order_id = %s AND status IN (%s, %s)', (work_order_id, 'ready', 'building')).fetchone()
+        else:
+            existing_assembly = conn.execute('SELECT id FROM assembly_orders WHERE work_order_id = ? AND status IN (?, ?)', (work_order_id, 'ready', 'building')).fetchone()
+        
         if existing_assembly:
             return jsonify({'success': False, 'error': 'Work order is already in assembly line'})
         
-        # Check if components are available
+        # Check if components are available and deduct them
         components = get_components_for_set_type(work_order['set_type'], work_order['include_spacer'])
         for component in components:
-            item = conn.execute('SELECT * FROM items WHERE name = ?', (component,)).fetchone()
+            if is_postgres:
+                item = conn.execute('SELECT * FROM items WHERE name = %s', (component,)).fetchone()
+            else:
+                item = conn.execute('SELECT * FROM items WHERE name = ?', (component,)).fetchone()
+            
             if not item or item['quantity'] < work_order['required_sets']:
                 return jsonify({'success': False, 'error': f'Not enough {component} available'})
+            
+            # Deduct the components
+            new_quantity = item['quantity'] - work_order['required_sets']
+            if is_postgres:
+                conn.execute('UPDATE items SET quantity = %s WHERE id = %s', (new_quantity, item['id']))
+                
+                # Record the deduction
+                conn.execute('''
+                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                ''', (item['id'], -work_order['required_sets'], 'Assembly Line', f'Moved {work_order["order_number"]} to assembly', session['username'], datetime.now()))
+            else:
+                conn.execute('UPDATE items SET quantity = ? WHERE id = ?', (new_quantity, item['id']))
+                
+                # Record the deduction
+                conn.execute('''
+                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (item['id'], -work_order['required_sets'], 'Assembly Line', f'Moved {work_order["order_number"]} to assembly', session['username'], datetime.now()))
         
         # Create assembly order
-        conn.execute('''
-            INSERT INTO assembly_orders (work_order_id, status, moved_at)
-            VALUES (?, 'ready', ?)
-        ''', (work_order_id, datetime.now()))
+        if is_postgres:
+            conn.execute('''
+                INSERT INTO assembly_orders (work_order_id, status, moved_at)
+                VALUES (%s, %s, %s)
+            ''', (work_order_id, 'ready', datetime.now()))
+        else:
+            conn.execute('''
+                INSERT INTO assembly_orders (work_order_id, status, moved_at)
+                VALUES (?, ?, ?)
+            ''', (work_order_id, 'ready', datetime.now()))
         
         conn.commit()
         conn.close()
@@ -3065,7 +4167,7 @@ def move_to_assembly():
         send_assembly_notification(dict(work_order), "moved")
         
         broadcast_update()
-        return jsonify({'success': True, 'message': 'Work order moved to assembly line successfully'})
+        return jsonify({'success': True, 'message': 'Work order moved to assembly line and components deducted'})
         
     except Exception as e:
         conn.close()
@@ -3075,59 +4177,54 @@ def move_to_assembly():
 @login_required
 @role_required('operator')
 def complete_assembly():
-    """Complete an assembly order and deduct components"""
+    """Complete an assembly order"""
     data = request.get_json()
     assembly_order_id = data.get('assembly_order_id')
     
     if not assembly_order_id:
         return jsonify({'success': False, 'error': 'Assembly order ID is required'})
     
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
-        # Get assembly order with work order details
-        assembly_order = conn.execute('''
-            SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets, wo.include_spacer, wo.id as work_order_id
-            FROM assembly_orders ao
-            JOIN work_orders wo ON ao.work_order_id = wo.id
-            WHERE ao.id = ? AND ao.status = 'ready'
-        ''', (assembly_order_id,)).fetchone()
+        # Get assembly order
+        if is_postgres:
+            assembly_order = conn.execute('SELECT * FROM assembly_orders WHERE id = %s', (assembly_order_id,)).fetchone()
+        else:
+            assembly_order = conn.execute('SELECT * FROM assembly_orders WHERE id = ?', (assembly_order_id,)).fetchone()
         
         if not assembly_order:
-            return jsonify({'success': False, 'error': 'Ready assembly order not found'})
+            return jsonify({'success': False, 'error': 'Assembly order not found'})
         
-        # Get components for this set type
-        components = get_components_for_set_type(assembly_order['set_type'], assembly_order['include_spacer'])
+        # Get work order
+        if is_postgres:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = %s', (assembly_order['work_order_id'],)).fetchone()
+        else:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = ?', (assembly_order['work_order_id'],)).fetchone()
         
-        # Deduct components from inventory
-        for component in components:
-            conn.execute('UPDATE items SET quantity = quantity - ? WHERE name = ?', 
-                        (assembly_order['required_sets'], component))
-            
-            # Log the transaction
-            item = conn.execute('SELECT id FROM items WHERE name = ?', (component,)).fetchone()
-            if item:
-                conn.execute('''
-                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (item['id'], -assembly_order['required_sets'], 'Assembly Line', 
-                      f'Assembly order {assembly_order["order_number"]} completed', session['username'], datetime.now()))
+        if not work_order:
+            return jsonify({'success': False, 'error': 'Work order not found'})
         
         # Update assembly order status
-        conn.execute('''
-            UPDATE assembly_orders 
-            SET status = 'completed', completed_at = ?, assembled_by = ?
-            WHERE id = ?
-        ''', (datetime.now(), session['username'], assembly_order_id))
+        if is_postgres:
+            conn.execute('UPDATE assembly_orders SET status = %s, completed_at = %s, assembled_by = %s WHERE id = %s', 
+                        ('completed', datetime.now(), session['username'], assembly_order_id))
+        else:
+            conn.execute('UPDATE assembly_orders SET status = ?, completed_at = ?, assembled_by = ? WHERE id = ?', 
+                        ('completed', datetime.now(), session['username'], assembly_order_id))
         
-        # Mark work order as completed
-        conn.execute('UPDATE work_orders SET status = "completed" WHERE id = ?', (assembly_order['work_order_id'],))
+        # Update work order status
+        if is_postgres:
+            conn.execute('UPDATE work_orders SET status = %s WHERE id = %s', ('completed', work_order['id']))
+        else:
+            conn.execute('UPDATE work_orders SET status = ? WHERE id = ?', ('completed', work_order['id']))
         
         conn.commit()
         conn.close()
         
         # Send Slack notification
-        send_assembly_notification(dict(assembly_order), "completed", session['username'])
+        send_assembly_notification(dict(work_order), "completed", session['username'])
         
         broadcast_update()
         return jsonify({'success': True, 'message': 'Assembly completed successfully'})
@@ -3136,126 +4233,201 @@ def complete_assembly():
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
 
-# External Orders API Routes
-@app.route('/api/upload_csv', methods=['POST'])
+# Work Order API Routes
+@app.route('/api/add_work_order', methods=['POST'])
 @login_required
 @role_required('operator')
-def upload_csv():
-    """Upload and process CSV file for external orders"""
+def add_work_order():
+    """Add a new work order"""
+    data = request.get_json()
+    order_number = data.get('order_number', '').strip()
+    set_type = data.get('set_type')
+    required_sets = data.get('required_sets')
+    include_spacer = data.get('include_spacer', False)
+    
+    if not order_number or not set_type or not required_sets:
+        return jsonify({'success': False, 'error': 'Order number, set type, and required sets are required'})
+    
     try:
-        if 'csv_file' not in request.files:
-            return jsonify({'success': False, 'error': 'No file uploaded'})
+        required_sets = int(required_sets)
+        if required_sets <= 0:
+            return jsonify({'success': False, 'error': 'Required sets must be greater than 0'})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid required sets value'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        # Check if work order already exists
+        if is_postgres:
+            existing = conn.execute('SELECT id FROM work_orders WHERE order_number = %s', (order_number,)).fetchone()
+        else:
+            existing = conn.execute('SELECT id FROM work_orders WHERE order_number = ?', (order_number,)).fetchone()
         
-        file = request.files['csv_file']
-        if file.filename == '':
-            return jsonify({'success': False, 'error': 'No file selected'})
+        if existing:
+            return jsonify({'success': False, 'error': 'Work order with this number already exists'})
         
-        if not file.filename.lower().endswith('.csv'):
-            return jsonify({'success': False, 'error': 'File must be a CSV'})
+        # Add work order
+        if is_postgres:
+            conn.execute('''
+                INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+                VALUES (%s, %s, %s, %s)
+            ''', (order_number, set_type, required_sets, include_spacer))
+        else:
+            conn.execute('''
+                INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
+                VALUES (?, ?, ?, ?)
+            ''', (order_number, set_type, required_sets, include_spacer))
         
-        # Process the CSV file
-        file_content = file.read()
-        csv_result = process_csv_upload(file_content)
+        conn.commit()
         
-        if not csv_result['success']:
-            return jsonify({'success': False, 'error': csv_result['error']})
+        # Get current inventory for notification
+        items = conn.execute('SELECT * FROM items').fetchall()
+        current_inventory = [dict(item) for item in items]
         
-        # Process the orders from CSV
-        conn = get_db()
-        sku_mapping = get_sku_mapping()
-        new_orders = []
-        converted_count = 0
+        # Get the created work order
+        if is_postgres:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE order_number = %s', (order_number,)).fetchone()
+        else:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE order_number = ?', (order_number,)).fetchone()
         
-        for order in csv_result['orders']:
-            # Check if this order already exists
-            existing = conn.execute(
-                'SELECT id FROM external_work_orders WHERE external_order_number = ?',
-                (order['oem_po_number'],)
-            ).fetchone()
-            
-            if not existing:
-                # Create new external work order
-                sku = order['sku']
-                quantity = int(order['qty'])
-                required_brackets = sku_mapping.get(sku, [])
-                
-                if required_brackets:  # Only create if we have a mapping
-                    conn.execute('''
-                        INSERT INTO external_work_orders 
-                        (external_order_number, sku, quantity, required_brackets, last_synced)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (order['oem_po_number'], sku, quantity, json.dumps(required_brackets), datetime.now()))
-                    
-                    new_order = {
-                        'external_order_number': order['oem_po_number'],
-                        'sku': sku,
-                        'quantity': quantity,
-                        'required_brackets': required_brackets
-                    }
-                    new_orders.append(new_order)
-                    print(f"✅ Created external order: {order['oem_po_number']} for SKU {sku}")
-                    
-                    # Convert to regular work order
-                    if convert_external_to_work_order(new_order):
-                        converted_count += 1
+        conn.close()
+        
+        # Send Slack notification
+        if work_order:
+            send_work_order_notification(dict(work_order), current_inventory)
+        
+        broadcast_update()
+        return jsonify({'success': True, 'message': 'Work order added successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/delete_work_order', methods=['POST'])
+@login_required
+@role_required('operator')
+def delete_work_order():
+    """Delete a work order"""
+    data = request.get_json()
+    work_order_id = data.get('work_order_id')
+    
+    if not work_order_id:
+        return jsonify({'success': False, 'error': 'Work order ID is required'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        # Check if work order exists
+        if is_postgres:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = %s', (work_order_id,)).fetchone()
+        else:
+            work_order = conn.execute('SELECT * FROM work_orders WHERE id = ?', (work_order_id,)).fetchone()
+        
+        if not work_order:
+            return jsonify({'success': False, 'error': 'Work order not found'})
+        
+        # Delete work order
+        if is_postgres:
+            conn.execute('DELETE FROM work_orders WHERE id = %s', (work_order_id,))
+        else:
+            conn.execute('DELETE FROM work_orders WHERE id = ?', (work_order_id,))
         
         conn.commit()
         conn.close()
         
-        # Send notifications
-        for order in new_orders:
-            missing_brackets = check_bracket_availability(order['required_brackets'], order['quantity'])
-            
-            if missing_brackets:
-                missing_list = ", ".join([f"{mb['name']} (need {mb['missing']})" for mb in missing_brackets])
-                message = f"🚨 *CSV UPLOAD - MISSING BRACKETS*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Quantity:* {order['quantity']}\n*Missing Brackets:* {missing_list}\n\n*Action Required:* Please print additional brackets."
-                send_slack_notification(message)
-            else:
-                message = f"✅ *CSV UPLOAD - READY TO PICK*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Quantity:* {order['quantity']}\n*Brackets Needed:* {', '.join(order['required_brackets'])}\n\nAll brackets are available for picking."
-                send_slack_notification(message)
-        
         broadcast_update()
-        
-        result_message = f'Uploaded {len(new_orders)} orders from CSV'
-        if converted_count > 0:
-            result_message += f' and converted {converted_count} to work orders'
-        
-        return jsonify({
-            'success': True,
-            'message': result_message,
-            'new_orders': len(new_orders),
-            'converted_orders': converted_count
-        })
+        return jsonify({'success': True, 'message': 'Work order deleted successfully'})
         
     except Exception as e:
-        print(f"❌ CSV upload error: {str(e)}")
+        conn.close()
         return jsonify({'success': False, 'error': str(e)})
 
+# External Orders API Routes
 @app.route('/api/external_orders')
 @login_required
 def get_external_orders():
     """Get all external work orders"""
-    conn = get_db()
-    orders = conn.execute('''
-        SELECT * FROM external_work_orders 
-        ORDER BY created_at DESC
-    ''').fetchall()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        orders = conn.execute('SELECT * FROM external_work_orders ORDER BY created_at DESC').fetchall()
+    else:
+        orders = conn.execute('SELECT * FROM external_work_orders ORDER BY created_at DESC').fetchall()
+    
     conn.close()
     
-    orders_data = []
-    for order in orders:
-        orders_data.append({
-            'id': order['id'],
-            'external_order_number': order['external_order_number'],
-            'sku': order['sku'],
-            'quantity': order['quantity'],
-            'required_brackets': json.loads(order['required_brackets']),
-            'status': order['status'],
-            'created_at': order['created_at'],
-            'last_synced': order['last_synced']
-        })
-    
+    orders_data = [dict(order) for order in orders]
     return jsonify({'orders': orders_data})
+
+@app.route('/api/upload_csv', methods=['POST'])
+@login_required
+@role_required('operator')
+def upload_csv():
+    """Upload CSV file with external work orders"""
+    if 'csv_file' not in request.files:
+        return jsonify({'success': False, 'error': 'No file uploaded'})
+    
+    file = request.files['csv_file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': 'No file selected'})
+    
+    if not file.filename.endswith('.csv'):
+        return jsonify({'success': False, 'error': 'File must be a CSV'})
+    
+    try:
+        file_content = file.read()
+        result = process_csv_upload(file_content)
+        
+        if not result['success']:
+            return jsonify({'success': False, 'error': result['error']})
+        
+        # Save orders to database
+        conn = get_db_connection()
+        is_postgres = 'postgresql' in str(conn)
+        
+        orders_added = 0
+        sku_mapping = get_sku_mapping()
+        
+        for order in result['orders']:
+            try:
+                # Get required brackets from SKU mapping
+                required_brackets = sku_mapping.get(order['sku'], [])
+                
+                if is_postgres:
+                    conn.execute('''
+                        INSERT INTO external_work_orders (external_order_number, sku, quantity, required_brackets)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (external_order_number) DO UPDATE SET
+                        sku = EXCLUDED.sku,
+                        quantity = EXCLUDED.quantity,
+                        required_brackets = EXCLUDED.required_brackets,
+                        last_synced = CURRENT_TIMESTAMP
+                    ''', (order['wo_number'], order['sku'], int(order['qty']), json.dumps(required_brackets)))
+                else:
+                    conn.execute('''
+                        INSERT OR REPLACE INTO external_work_orders 
+                        (external_order_number, sku, quantity, required_brackets, last_synced)
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    ''', (order['wo_number'], order['sku'], int(order['qty']), json.dumps(required_brackets)))
+                
+                orders_added += 1
+                
+            except Exception as e:
+                print(f"⚠️ Error saving order {order['wo_number']}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        message = f"Successfully processed {orders_added} orders from CSV"
+        return jsonify({'success': True, 'message': message})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Failed to process CSV: {str(e)}'})
 
 @app.route('/api/convert_external_order', methods=['POST'])
 @login_required
@@ -3268,32 +4440,32 @@ def convert_external_order():
     if not external_order_id:
         return jsonify({'success': False, 'error': 'External order ID is required'})
     
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
-        # Get the external order
-        external_order = conn.execute('SELECT * FROM external_work_orders WHERE id = ?', (external_order_id,)).fetchone()
+        # Get external order
+        if is_postgres:
+            external_order = conn.execute('SELECT * FROM external_work_orders WHERE id = %s', (external_order_id,)).fetchone()
+        else:
+            external_order = conn.execute('SELECT * FROM external_work_orders WHERE id = ?', (external_order_id,)).fetchone()
+        
         if not external_order:
             return jsonify({'success': False, 'error': 'External order not found'})
         
-        external_order_dict = {
-            'external_order_number': external_order['external_order_number'],
-            'sku': external_order['sku'],
-            'quantity': external_order['quantity'],
-            'required_brackets': json.loads(external_order['required_brackets'])
-        }
-        
         # Convert to work order
-        success = convert_external_to_work_order(external_order_dict)
-        
-        if success:
-            # Mark external order as converted
-            conn.execute('UPDATE external_work_orders SET status = "converted" WHERE id = ?', (external_order_id,))
+        if convert_external_to_work_order(dict(external_order)):
+            # Update external order status
+            if is_postgres:
+                conn.execute('UPDATE external_work_orders SET status = %s WHERE id = %s', ('converted', external_order_id))
+            else:
+                conn.execute('UPDATE external_work_orders SET status = ? WHERE id = ?', ('converted', external_order_id))
+            
             conn.commit()
             conn.close()
             
             broadcast_update()
-            return jsonify({'success': True, 'message': 'External order converted to work order successfully'})
+            return jsonify({'success': True, 'message': 'External order converted to work order'})
         else:
             conn.close()
             return jsonify({'success': False, 'error': 'Failed to convert external order'})
@@ -3306,48 +4478,28 @@ def convert_external_order():
 @login_required
 @role_required('operator')
 def complete_external_order():
-    """Mark an external work order as completed"""
+    """Mark an external work order as complete"""
     data = request.get_json()
     order_id = data.get('order_id')
     
     if not order_id:
         return jsonify({'success': False, 'error': 'Order ID is required'})
     
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
-        # Get the external order
-        order = conn.execute('SELECT * FROM external_work_orders WHERE id = ?', (order_id,)).fetchone()
-        if not order:
-            return jsonify({'success': False, 'error': 'External order not found'})
-        
-        # Deduct brackets from inventory
-        required_brackets = json.loads(order['required_brackets'])
-        for bracket in required_brackets:
-            conn.execute('UPDATE items SET quantity = quantity - ? WHERE name = ?', 
-                        (order['quantity'], bracket))
-            
-            # Log the transaction
-            item = conn.execute('SELECT id FROM items WHERE name = ?', (bracket,)).fetchone()
-            if item:
-                conn.execute('''
-                    INSERT INTO transactions (item_id, change, station, notes, username, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (item['id'], -order['quantity'], 'External Order Completion', 
-                      f'External order {order["external_order_number"]} completed', session['username'], datetime.now()))
-        
-        # Mark external order as completed
-        conn.execute('UPDATE external_work_orders SET status = "completed" WHERE id = ?', (order_id,))
+        # Update external order status
+        if is_postgres:
+            conn.execute('UPDATE external_work_orders SET status = %s WHERE id = %s', ('completed', order_id))
+        else:
+            conn.execute('UPDATE external_work_orders SET status = ? WHERE id = ?', ('completed', order_id))
         
         conn.commit()
         conn.close()
         
-        # Send completion notification
-        message = f"✅ *EXTERNAL ORDER COMPLETED*\n\n*Order #:* {order['external_order_number']}\n*SKU:* {order['sku']}\n*Completed Quantity:* {order['quantity']}\n*Brackets Used:* {', '.join(required_brackets)}\n\nComponents have been deducted from inventory."
-        send_slack_notification(message)
-        
         broadcast_update()
-        return jsonify({'success': True, 'message': 'External order completed successfully'})
+        return jsonify({'success': True, 'message': 'External work order completed'})
         
     except Exception as e:
         conn.close()
@@ -3364,224 +4516,149 @@ def delete_external_order():
     if not order_id:
         return jsonify({'success': False, 'error': 'Order ID is required'})
     
-    conn = get_db()
-    conn.execute('DELETE FROM external_work_orders WHERE id = ?', (order_id,))
-    conn.commit()
-    conn.close()
-    
-    broadcast_update()
-    return jsonify({'success': True, 'message': 'External order deleted successfully'})
-
-# Company Settings API Routes
-@app.route('/api/company_settings', methods=['GET'])
-@login_required
-@role_required('admin')
-def company_settings():
-    sku_mapping = get_sku_mapping()
-    sku_set_mapping = get_sku_set_mapping()
-    
-    return jsonify({
-        'success': True,
-        'sku_mapping': sku_mapping,
-        'sku_set_mapping': sku_set_mapping
-    })
-
-@app.route('/api/sku_mapping', methods=['POST'])
-@login_required
-@role_required('admin')
-def update_sku_mapping():
-    """Update SKU to bracket mapping"""
-    data = request.get_json()
-    sku_mapping = data.get('sku_mapping', {})
-    sku_set_mapping = data.get('sku_set_mapping', {})
-    
-    update_setting('sku_mapping', json.dumps(sku_mapping))
-    update_setting('sku_set_mapping', json.dumps(sku_set_mapping))
-    
-    return jsonify({'success': True, 'message': 'SKU mapping updated successfully'})
-
-# Slack Integration Routes
-@app.route('/api/slack_webhook', methods=['POST'])
-@login_required
-@role_required('admin')
-def update_slack_webhook():
-    """Update Slack webhook URL"""
-    data = request.get_json()
-    webhook_url = data.get('webhook_url', '').strip()
-    
-    update_setting('slack_webhook_url', webhook_url)
-    
-    return jsonify({'success': True, 'message': 'Slack webhook updated successfully'})
-
-@app.route('/api/test_slack', methods=['POST'])
-@login_required
-@role_required('admin')
-def test_slack():
-    """Send test Slack notification"""
-    message = "🧪 *TEST NOTIFICATION*\n\nThis is a test message from your Bracket Inventory Tracker. If you can see this, your Slack integration is working correctly!"
-    
-    if send_slack_notification(message):
-        return jsonify({'success': True, 'message': 'Test notification sent successfully'})
-    else:
-        return jsonify({'success': False, 'error': 'Failed to send test notification'})
-
-# Work Order Routes
-@app.route('/api/add_work_order', methods=['POST'])
-@login_required
-@role_required('operator')
-def add_work_order():
-    data = request.get_json()
-    order_number = data.get('order_number')
-    set_type = data.get('set_type')
-    required_sets = data.get('required_sets')
-    include_spacer = data.get('include_spacer', False)
-    
-    if not all([order_number, set_type, required_sets]):
-        return jsonify({'success': False, 'error': 'Missing required fields'})
-    
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
     try:
-        # Get current inventory for notification
-        items = conn.execute('SELECT * FROM items').fetchall()
-        current_inventory = [dict(item) for item in items]
-        
-        # Add work order
-        cursor = conn.execute('''
-            INSERT INTO work_orders (order_number, set_type, required_sets, include_spacer)
-            VALUES (?, ?, ?, ?)
-        ''', (order_number, set_type, required_sets, include_spacer))
-        
-        work_order_id = cursor.lastrowid
-        
-        # Get the created work order
-        work_order = conn.execute('SELECT * FROM work_orders WHERE id = ?', (work_order_id,)).fetchone()
+        # Delete external order
+        if is_postgres:
+            conn.execute('DELETE FROM external_work_orders WHERE id = %s', (order_id,))
+        else:
+            conn.execute('DELETE FROM external_work_orders WHERE id = ?', (order_id,))
         
         conn.commit()
-        
-        # Send detailed Slack notification
-        send_work_order_notification(dict(work_order), current_inventory)
-        
         conn.close()
         
         broadcast_update()
-        return jsonify({'success': True, 'message': 'Work order added successfully'})
+        return jsonify({'success': True, 'message': 'External work order deleted'})
         
     except Exception as e:
         conn.close()
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/api/delete_work_order', methods=['POST'])
-@login_required
-@role_required('operator')
-def delete_work_order():
-    data = request.get_json()
-    work_order_id = data.get('work_order_id')
-    
-    if not work_order_id:
-        return jsonify({'success': False, 'error': 'Work order ID is required'})
-    
-    conn = get_db()
-    conn.execute('DELETE FROM work_orders WHERE id = ?', (work_order_id,))
-    conn.commit()
-    conn.close()
-    
-    broadcast_update()
-    return jsonify({'success': True, 'message': 'Work order deleted successfully'})
-
-# History Routes
+# History API Routes
 @app.route('/api/history')
 @login_required
 def get_history():
-    limit = request.args.get('limit', 50)
+    """Get transaction history"""
+    limit = request.args.get('limit', 50, type=int)
     filter_type = request.args.get('filter', 'all')
     
-    conn = get_db()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
-    query = '''
-        SELECT t.*, i.name as item_name, i.case_type 
-        FROM transactions t 
-        JOIN items i ON t.item_id = i.id 
-    '''
+    # Build query based on filter
+    if filter_type == 'all':
+        if is_postgres:
+            history = conn.execute('''
+                SELECT t.*, i.name as item_name, i.case_type
+                FROM transactions t 
+                JOIN items i ON t.item_id = i.id 
+                ORDER BY t.timestamp DESC 
+                LIMIT %s
+            ''', (limit,)).fetchall()
+        else:
+            history = conn.execute('''
+                SELECT t.*, i.name as item_name, i.case_type
+                FROM transactions t 
+                JOIN items i ON t.item_id = i.id 
+                ORDER BY t.timestamp DESC 
+                LIMIT ?
+            ''', (limit,)).fetchall()
+    else:
+        if is_postgres:
+            history = conn.execute('''
+                SELECT t.*, i.name as item_name, i.case_type
+                FROM transactions t 
+                JOIN items i ON t.item_id = i.id 
+                WHERE i.case_type = %s
+                ORDER BY t.timestamp DESC 
+                LIMIT %s
+            ''', (filter_type, limit)).fetchall()
+        else:
+            history = conn.execute('''
+                SELECT t.*, i.name as item_name, i.case_type
+                FROM transactions t 
+                JOIN items i ON t.item_id = i.id 
+                WHERE i.case_type = ?
+                ORDER BY t.timestamp DESC 
+                LIMIT ?
+            ''', (filter_type, limit)).fetchall()
     
-    if filter_type != 'all':
-        query += f" WHERE i.case_type = '{filter_type}'"
-    
-    query += ' ORDER BY t.timestamp DESC LIMIT ?'
-    
-    history = conn.execute(query, (limit,)).fetchall()
     conn.close()
     
     history_data = [dict(record) for record in history]
     return jsonify({'history': history_data})
 
-# User Management Routes
-@app.route('/api/users', methods=['GET', 'POST', 'DELETE'])
+# Admin API Routes
+@app.route('/api/users')
 @login_required
 @role_required('admin')
-def manage_users():
-    if request.method == 'GET':
-        conn = get_db()
+def get_users():
+    """Get all users"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
         users = conn.execute('SELECT id, username, role, created_at FROM users ORDER BY username').fetchall()
-        conn.close()
-        
-        users_data = [dict(user) for user in users]
-        return jsonify({'users': users_data})
+    else:
+        users = conn.execute('SELECT id, username, role, created_at FROM users ORDER BY username').fetchall()
     
-    elif request.method == 'POST':
-        data = request.get_json()
-        username = data.get('username', '').strip()
-        password = data.get('password', '')
-        role = data.get('role', 'viewer')
+    conn.close()
+    
+    users_data = [dict(user) for user in users]
+    return jsonify({'users': users_data})
+
+@app.route('/api/users', methods=['POST'])
+@login_required
+@role_required('admin')
+def create_user():
+    """Create a new user"""
+    data = request.get_json()
+    username = data.get('username', '').strip()
+    password = data.get('password', '')
+    role = data.get('role', 'viewer')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password are required'})
+    
+    if role not in ['admin', 'operator', 'viewer']:
+        return jsonify({'success': False, 'error': 'Invalid role'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        # Check if username already exists
+        if is_postgres:
+            existing = conn.execute('SELECT id FROM users WHERE username = %s', (username,)).fetchone()
+        else:
+            existing = conn.execute('SELECT id FROM users WHERE username = ?', (username,)).fetchone()
         
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Username and password are required'})
-        
-        if role not in ['admin', 'operator', 'viewer']:
-            return jsonify({'success': False, 'error': 'Invalid role'})
-        
-        conn = get_db()
-        
-        try:
-            conn.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
-                        (username, hash_password(password), role))
-            conn.commit()
-            conn.close()
-            
-            return jsonify({'success': True, 'message': 'User added successfully'})
-            
-        except sqlite3.IntegrityError:
-            conn.close()
+        if existing:
             return jsonify({'success': False, 'error': 'Username already exists'})
-        except Exception as e:
-            conn.close()
-            return jsonify({'success': False, 'error': str(e)})
-    
-    elif request.method == 'DELETE':
-        data = request.get_json()
-        user_id = data.get('user_id')
         
-        if not user_id:
-            return jsonify({'success': False, 'error': 'User ID is required'})
+        # Create user
+        password_hash = hash_password(password)
+        if is_postgres:
+            conn.execute('INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s)', (username, password_hash, role))
+        else:
+            conn.execute('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)', (username, password_hash, role))
         
-        conn = get_db()
-        
-        # Prevent deleting current user
-        current_user = conn.execute('SELECT id FROM users WHERE id = ?', (user_id,)).fetchone()
-        if current_user and current_user['id'] == session['user_id']:
-            conn.close()
-            return jsonify({'success': False, 'error': 'Cannot delete your own account'})
-        
-        conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
         conn.commit()
         conn.close()
         
-        return jsonify({'success': True, 'message': 'User deleted successfully'})
+        return jsonify({'success': True, 'message': 'User created successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/users/role', methods=['POST'])
 @login_required
 @role_required('admin')
-def change_user_role():
+def update_user_role():
+    """Update user role"""
     data = request.get_json()
     user_id = data.get('user_id')
     role = data.get('role')
@@ -3592,171 +4669,242 @@ def change_user_role():
     if role not in ['admin', 'operator', 'viewer']:
         return jsonify({'success': False, 'error': 'Invalid role'})
     
-    conn = get_db()
-    conn.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
-    conn.commit()
-    conn.close()
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
     
-    return jsonify({'success': True, 'message': 'User role updated successfully'})
+    try:
+        # Update user role
+        if is_postgres:
+            conn.execute('UPDATE users SET role = %s WHERE id = %s', (role, user_id))
+        else:
+            conn.execute('UPDATE users SET role = ? WHERE id = ?', (role, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'User role updated successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
 
-# Stock Settings Routes
+@app.route('/api/users', methods=['DELETE'])
+@login_required
+@role_required('admin')
+def delete_user():
+    """Delete a user"""
+    data = request.get_json()
+    user_id = data.get('user_id')
+    
+    if not user_id:
+        return jsonify({'success': False, 'error': 'User ID is required'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        # Prevent deleting own account
+        if is_postgres:
+            user = conn.execute('SELECT username FROM users WHERE id = %s', (user_id,)).fetchone()
+        else:
+            user = conn.execute('SELECT username FROM users WHERE id = ?', (user_id,)).fetchone()
+        
+        if user and user['username'] == session['username']:
+            return jsonify({'success': False, 'error': 'Cannot delete your own account'})
+        
+        # Delete user
+        if is_postgres:
+            conn.execute('DELETE FROM users WHERE id = %s', (user_id,))
+        else:
+            conn.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({'success': True, 'message': 'User deleted successfully'})
+        
+    except Exception as e:
+        conn.close()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/company_settings')
+@login_required
+@role_required('admin')
+def get_company_settings():
+    """Get company settings"""
+    settings = {
+        'sku_mapping': get_sku_mapping(),
+        'sku_set_mapping': get_sku_set_mapping(),
+        'low_stock_threshold': int(get_setting('low_stock_threshold', 5)),
+        'critical_stock_threshold': int(get_setting('critical_stock_threshold', 2)),
+        'slack_webhook_url': get_setting('slack_webhook_url', '')
+    }
+    
+    return jsonify({'success': True, **settings})
+
 @app.route('/api/stock_settings', methods=['POST'])
 @login_required
 @role_required('admin')
 def update_stock_settings():
+    """Update stock settings"""
     data = request.get_json()
     low_stock = data.get('low_stock')
     critical_stock = data.get('critical_stock')
     
-    if low_stock is None or critical_stock is None:
-        return jsonify({'success': False, 'error': 'Both thresholds are required'})
+    if not low_stock or not critical_stock:
+        return jsonify({'success': False, 'error': 'Low stock and critical stock thresholds are required'})
     
+    try:
+        low_stock = int(low_stock)
+        critical_stock = int(critical_stock)
+        
+        if low_stock <= 0 or critical_stock < 0:
+            return jsonify({'success': False, 'error': 'Thresholds must be positive numbers'})
+        
+        if critical_stock >= low_stock:
+            return jsonify({'success': False, 'error': 'Critical stock threshold must be lower than low stock threshold'})
+        
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid threshold values'})
+    
+    # Update settings
     update_setting('low_stock_threshold', str(low_stock))
     update_setting('critical_stock_threshold', str(critical_stock))
     
+    # Update all items with new min_stock values
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        conn.execute('UPDATE items SET min_stock = %s', (low_stock,))
+    else:
+        conn.execute('UPDATE items SET min_stock = ?', (low_stock,))
+    
+    conn.commit()
+    conn.close()
+    
+    broadcast_update()
     return jsonify({'success': True, 'message': 'Stock settings updated successfully'})
 
-# Export Routes
+@app.route('/api/sku_mapping', methods=['POST'])
+@login_required
+@role_required('admin')
+def update_sku_mapping():
+    """Update SKU mapping"""
+    data = request.get_json()
+    sku_mapping = data.get('sku_mapping')
+    sku_set_mapping = data.get('sku_set_mapping')
+    
+    if not sku_mapping or not sku_set_mapping:
+        return jsonify({'success': False, 'error': 'SKU mapping and SKU set mapping are required'})
+    
+    # Validate JSON
+    try:
+        json.dumps(sku_mapping)
+        json.dumps(sku_set_mapping)
+    except:
+        return jsonify({'success': False, 'error': 'Invalid JSON format'})
+    
+    # Update settings
+    update_setting('sku_mapping', json.dumps(sku_mapping))
+    update_setting('sku_set_mapping', json.dumps(sku_set_mapping))
+    
+    return jsonify({'success': True, 'message': 'SKU mapping updated successfully'})
+
+@app.route('/api/slack_webhook', methods=['POST'])
+@login_required
+@role_required('admin')
+def update_slack_webhook():
+    """Update Slack webhook URL"""
+    data = request.get_json()
+    webhook_url = data.get('webhook_url', '').strip()
+    
+    # Validate webhook URL format
+    if webhook_url and not webhook_url.startswith('https://hooks.slack.com/services/'):
+        return jsonify({'success': False, 'error': 'Invalid Slack webhook URL format'})
+    
+    update_setting('slack_webhook_url', webhook_url)
+    
+    return jsonify({'success': True, 'message': 'Slack webhook updated successfully'})
+
+@app.route('/api/test_slack', methods=['POST'])
+@login_required
+@role_required('admin')
+def test_slack():
+    """Send test Slack notification"""
+    message = "🔔 *TEST NOTIFICATION*\n\nThis is a test message from the Bracket Inventory Tracker.\n\nIf you can see this message, your Slack integration is working correctly! ✅"
+    
+    if send_slack_notification(message):
+        return jsonify({'success': True, 'message': 'Test notification sent successfully'})
+    else:
+        return jsonify({'success': False, 'error': 'Failed to send test notification'})
+
+# Export API Routes
 @app.route('/api/export/csv')
 @login_required
 def export_csv():
-    conn = get_db()
+    """Export inventory data as CSV"""
+    conn = get_db_connection()
     
-    # Get inventory data
     items = conn.execute('SELECT * FROM items ORDER BY case_type, name').fetchall()
-    
-    # Get transaction history
-    transactions = conn.execute('''
-        SELECT t.timestamp, i.name, i.case_type, t.change, t.station, t.notes, t.username
-        FROM transactions t 
-        JOIN items i ON t.item_id = i.id 
-        ORDER BY t.timestamp DESC 
-        LIMIT 1000
-    ''').fetchall()
-    
-    # Get external orders
-    external_orders = conn.execute('SELECT * FROM external_work_orders ORDER BY created_at DESC').fetchall()
-    
-    # Get assembly orders
-    assembly_orders = conn.execute('''
-        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets
-        FROM assembly_orders ao
-        JOIN work_orders wo ON ao.work_order_id = wo.id
-        ORDER BY ao.moved_at DESC
-    ''').fetchall()
-    
     conn.close()
     
-    # Create CSV content
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Write inventory section
-    writer.writerow(["INVENTORY DATA"])
-    writer.writerow([])
-    writer.writerow(['Name', 'Description', 'Case Type', 'Quantity', 'Min Stock'])
+    # Write header
+    writer.writerow(['Component', 'Description', 'Case Type', 'Quantity', 'Min Stock', 'Last Updated'])
+    
+    # Write data
     for item in items:
         writer.writerow([
             item['name'],
             item['description'],
             item['case_type'],
             item['quantity'],
-            item['min_stock']
+            item['min_stock'],
+            item['created_at']
         ])
     
-    writer.writerow([])
-    writer.writerow([])
-    
-    # Write transactions section
-    writer.writerow(["TRANSACTION HISTORY"])
-    writer.writerow([])
-    writer.writerow(['Timestamp', 'Item', 'Case Type', 'Change', 'Station', 'User', 'Notes'])
-    for trans in transactions:
-        writer.writerow([
-            trans['timestamp'],
-            trans['name'],
-            trans['case_type'],
-            trans['change'],
-            trans['station'],
-            trans['username'],
-            trans['notes'] or ''
-        ])
-    
-    writer.writerow([])
-    writer.writerow([])
-    
-    # Write external orders section
-    writer.writerow(["EXTERNAL WORK ORDERS"])
-    writer.writerow([])
-    writer.writerow(['Order Number', 'SKU', 'Quantity', 'Required Brackets', 'Status', 'Created At'])
-    for order in external_orders:
-        writer.writerow([
-            order['external_order_number'],
-            order['sku'],
-            order['quantity'],
-            order['required_brackets'],
-            order['status'],
-            order['created_at']
-        ])
-    
-    writer.writerow([])
-    writer.writerow([])
-    
-    # Write assembly orders section
-    writer.writerow(["ASSEMBLY LINE ORDERS"])
-    writer.writerow([])
-    writer.writerow(['Order Number', 'Set Type', 'Required Sets', 'Status', 'Moved At', 'Started At', 'Completed At', 'Assembled By'])
-    for order in assembly_orders:
-        writer.writerow([
-            order['order_number'],
-            order['set_type'],
-            order['required_sets'],
-            order['status'],
-            order['moved_at'],
-            order['started_at'],
-            order['completed_at'],
-            order['assembled_by'] or ''
-        ])
-    
-    output.seek(0)
-    
-    return app.response_class(
+    response = app.response_class(
         output.getvalue(),
         mimetype='text/csv',
         headers={'Content-Disposition': 'attachment;filename=inventory_export.csv'}
     )
+    
+    return response
 
 @app.route('/api/inventory_json')
 @login_required
 def inventory_json():
-    conn = get_db()
+    """Export inventory data as JSON"""
+    conn = get_db_connection()
     
     items = conn.execute('SELECT * FROM items ORDER BY case_type, name').fetchall()
     work_orders = conn.execute("SELECT * FROM work_orders WHERE status = 'active'").fetchall()
     external_orders = conn.execute("SELECT * FROM external_work_orders WHERE status = 'active'").fetchall()
-    assembly_orders = conn.execute('''
-        SELECT ao.*, wo.order_number, wo.set_type, wo.required_sets
-        FROM assembly_orders ao
-        JOIN work_orders wo ON ao.work_order_id = wo.id
-        WHERE ao.status IN ('ready', 'building')
-    ''').fetchall()
-    
     conn.close()
     
-    inventory_data = {
-        'timestamp': datetime.now().isoformat(),
+    data = {
+        'export_timestamp': datetime.now().isoformat(),
         'inventory': [dict(item) for item in items],
         'work_orders': [dict(wo) for wo in work_orders],
-        'external_orders': [dict(eo) for eo in external_orders],
-        'assembly_orders': [dict(ao) for ao in assembly_orders]
+        'external_orders': [dict(eo) for eo in external_orders]
     }
     
-    return jsonify(inventory_data)
+    response = app.response_class(
+        json.dumps(data, indent=2),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment;filename=inventory_data.json'}
+    )
+    
+    return response
 
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
     print("👨‍💻 Developed by Mark Calvo")
-    print("🌐 Render.com Compatible Version 2.4")
+    print("🌐 Render.com Compatible Version 2.5")
+    print("💬 Added Team Chat & Work Order Analysis")
     init_database()
     print("✅ Database initialized")
     print("🌐 Server starting...")
