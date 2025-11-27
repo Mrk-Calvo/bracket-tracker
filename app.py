@@ -3335,7 +3335,32 @@ def send_slack_notification(message):
         logger.error(f"❌ Slack notification failed: {e}")
         return False
 
-# ... (rest of your existing functions remain the same - send_work_order_analysis_notification, convert_external_to_work_order, etc.)
+def send_printing_notification(item_name, change, new_quantity):
+    """Send notification for printing station updates"""
+    message = f":printer: *PRINTING STATION UPDATE*\n\n"
+    message += f"*Component:* {item_name}\n"
+    message += f"*Added Quantity:* +{change} units\n"
+    message += f"*New Total:* {new_quantity} units\n\n"
+    message += f"Inventory updated via Printing Station"
+    
+    return send_slack_notification(message)
+
+def send_inventory_change_notification(item_name, change, station, notes=""):
+    """Send notification for any inventory change"""
+    action_emoji = "📈" if change > 0 else "📉"
+    action_type = "ADDED" if change > 0 else "REMOVED"
+    
+    message = f"{action_emoji} *INVENTORY UPDATE - {action_type}*\n\n"
+    message += f"*Component:* {item_name}\n"
+    message += f"*Quantity Change:* {change:+d} units\n"
+    message += f"*Station:* {station}\n"
+    
+    if notes:
+        message += f"*Notes:* {notes}\n"
+    
+    message += f"\nInventory has been updated"
+    
+    return send_slack_notification(message)
 
 def broadcast_update():
     """Broadcast inventory updates to all connected clients"""
@@ -3523,8 +3548,89 @@ def handle_inventory_change(data):
         logger.error(f"Error in inventory_change: {str(e)}")
         socketio.emit('error', {'message': f'Error: {str(e)}'}, room=request.sid)
 
-# ... (rest of your existing routes remain the same - they should work with the new database connection)
+@socketio.on('chat_message')
+@login_required
+def handle_chat_message(data):
+    """Handle chat messages from users"""
+    message = data.get('message', '').strip()
+    sender = data.get('sender', 'Unknown')
+    
+    if not message:
+        return
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                (sender, message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                (sender, message)
+            )
+        
+        conn.commit()
+        
+        # Broadcast the new message to all connected clients
+        socketio.emit('chat_message', {
+            'sender': sender,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        logger.info(f"💬 Chat message from {sender}: {message}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving chat message: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
 
+@socketio.on('system_chat_message')
+def handle_system_chat_message(data):
+    """Handle system messages for chat"""
+    message = data.get('message', '').strip()
+    
+    if not message:
+        return
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                ('System', message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                ('System', message)
+            )
+        
+        conn.commit()
+        
+        # Broadcast the system message to all connected clients
+        socketio.emit('chat_message', {
+            'sender': 'System',
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        logger.info(f"🔔 System chat message: {message}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving system chat message: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
+# Flask routes
 @app.route('/')
 def index():
     if 'user_id' not in session:
@@ -3571,6 +3677,206 @@ def logout():
     session.clear()
     return jsonify({'success': True, 'message': 'Logout successful'})
 
+# Chat API Routes
+@app.route('/api/chat_messages')
+@login_required
+def get_chat_messages():
+    """Get recent chat messages"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            messages = conn.execute('''
+                SELECT * FROM chat_messages 
+                ORDER BY timestamp DESC 
+                LIMIT 50
+            ''').fetchall()
+        else:
+            messages = conn.execute('''
+                SELECT * FROM chat_messages 
+                ORDER BY timestamp DESC 
+                LIMIT 50
+            ''').fetchall()
+        
+        messages_data = [dict(msg) for msg in messages]
+        # Reverse to show oldest first
+        messages_data.reverse()
+        
+        return jsonify({'success': True, 'messages': messages_data})
+    finally:
+        conn.close()
+
+@app.route('/api/send_chat_message', methods=['POST'])
+@login_required
+def send_chat_message():
+    """Send a chat message"""
+    data = request.get_json()
+    message = data.get('message', '').strip()
+    
+    if not message:
+        return jsonify({'success': False, 'error': 'Message cannot be empty'})
+    
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (%s, %s)',
+                (session['username'], message)
+            )
+        else:
+            conn.execute(
+                'INSERT INTO chat_messages (sender, message) VALUES (?, ?)',
+                (session['username'], message)
+            )
+        
+        conn.commit()
+        
+        # Broadcast via SocketIO
+        socketio.emit('chat_message', {
+            'sender': session['username'],
+            'message': message,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        return jsonify({'success': True, 'message': 'Message sent'})
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+@app.route('/api/clear_chat_history', methods=['POST'])
+@login_required
+@role_required('admin')
+def clear_chat_history():
+    """Clear all chat messages"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    try:
+        if is_postgres:
+            conn.execute('DELETE FROM chat_messages')
+            # Add a new welcome message
+            conn.execute('INSERT INTO chat_messages (sender, message) VALUES (%s, %s)', 
+                        ('System', 'Chat history has been cleared. Start a new conversation!'))
+        else:
+            conn.execute('DELETE FROM chat_messages')
+            # Add a new welcome message
+            conn.execute('INSERT INTO chat_messages (sender, message) VALUES (?, ?)', 
+                        ('System', 'Chat history has been cleared. Start a new conversation!'))
+        
+        conn.commit()
+        
+        # Broadcast to all clients
+        socketio.emit('chat_message', {
+            'sender': 'System',
+            'message': 'Chat history has been cleared. Start a new conversation!',
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        return jsonify({'success': True, 'message': 'Chat history cleared successfully'})
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)})
+    finally:
+        conn.close()
+
+# Work Order Analysis Route
+@app.route('/api/work_order_analysis', methods=['POST'])
+@login_required
+@role_required('operator')
+def work_order_analysis():
+    """Generate and send work order analysis to Slack"""
+    try:
+        # This is a simplified version - you can expand this with your actual analysis logic
+        message = "🏭 *WORK ORDER ANALYSIS*\n\n"
+        message += "This feature analyzes current work orders and inventory status.\n"
+        message += "Detailed analysis would show what can be built vs what's missing.\n\n"
+        message += f"_Generated at {get_pst_time()}_"
+        
+        if send_slack_notification(message):
+            # Also send to chat
+            socketio.emit('system_chat_message', {
+                'message': 'Work order analysis has been sent to Slack. Check your Slack channel for details.'
+            })
+            
+            socketio.emit('system_notification', {
+                'message': 'Work order analysis sent to Slack successfully!',
+                'type': 'success'
+            })
+            
+            return jsonify({'success': True, 'message': 'Work order analysis sent to Slack'})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to send analysis to Slack'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+# Database Backup Route
+@app.route('/api/backup_database')
+@login_required
+@role_required('admin')
+def backup_database():
+    """Create a backup of the database"""
+    conn = get_db_connection()
+    is_postgres = 'postgresql' in str(conn)
+    
+    if is_postgres:
+        # For PostgreSQL, we can't easily create a downloadable backup
+        # Instead, provide a data export
+        return export_comprehensive_data()
+    else:
+        # For SQLite, we can provide the actual database file
+        try:
+            return send_file('nzxt_inventory.db', as_attachment=True, download_name='inventory_backup.db')
+        except Exception as e:
+            return jsonify({'success': False, 'error': f'Backup failed: {str(e)}'})
+    finally:
+        conn.close()
+
+def export_comprehensive_data():
+    """Export all data as a comprehensive JSON file"""
+    conn = get_db_connection()
+    
+    try:
+        # Get all data
+        items = conn.execute('SELECT * FROM items').fetchall()
+        transactions = conn.execute('SELECT * FROM transactions ORDER BY timestamp DESC').fetchall()
+        work_orders = conn.execute('SELECT * FROM work_orders').fetchall()
+        external_orders = conn.execute('SELECT * FROM external_work_orders').fetchall()
+        assembly_orders = conn.execute('SELECT * FROM assembly_orders').fetchall()
+        users = conn.execute('SELECT id, username, role, created_at FROM users').fetchall()
+        settings = conn.execute('SELECT * FROM settings').fetchall()
+        chat_messages = conn.execute('SELECT * FROM chat_messages ORDER BY timestamp DESC LIMIT 1000').fetchall()
+        
+        # Convert to dictionaries
+        data = {
+            'export_timestamp': datetime.now().isoformat(),
+            'items': [dict(item) for item in items],
+            'transactions': [dict(t) for t in transactions],
+            'work_orders': [dict(wo) for wo in work_orders],
+            'external_orders': [dict(eo) for eo in external_orders],
+            'assembly_orders': [dict(ao) for ao in assembly_orders],
+            'users': [dict(user) for user in users],
+            'settings': [dict(setting) for setting in settings],
+            'chat_messages': [dict(msg) for msg in chat_messages]
+        }
+        
+        # Create JSON response
+        response = app.response_class(
+            json.dumps(data, indent=2),
+            mimetype='application/json',
+            headers={'Content-Disposition': 'attachment;filename=inventory_backup.json'}
+        )
+        
+        return response
+    finally:
+        conn.close()
+
 # Add this new route for database status
 @app.route('/api/database_status')
 @login_required
@@ -3586,6 +3892,12 @@ def database_status():
     }
     
     return jsonify({'success': True, 'status': status_info})
+
+# Add this route to get current inventory for SocketIO
+@socketio.on('get_inventory')
+def handle_get_inventory():
+    """Handle request for current inventory"""
+    broadcast_update()
 
 if __name__ == '__main__':
     print("🚀 Starting Bracket Inventory Tracker...")
